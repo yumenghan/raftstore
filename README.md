@@ -1,2 +1,2 @@
 # raftstore
-A high-performance, high-scalability, and high-availability distributed kv based on raft
+A distributed kv based on raft with high performance, high scalability, high availability and support for distributed transactions
