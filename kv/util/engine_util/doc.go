@@ -6,7 +6,7 @@ etc.). This package contains code for interacting with such engines.
 
 CF means 'column family'. A good description of column families is given in https://github.com/facebook/rocksdb/wiki/Column-Families
 (specifically for RocksDB, but the general concepts are universal). In short, a column family is a key namespace.
-Multiple column families are usually implemented as almost separate databases. Importantly each column family can be
+Multiple column families are usually im plemented as almost separate databases. Importantly each column family can be
 configured separately. Writes can be made atomic across column families, which cannot be done for separate databases.
 
 engine_util includes the following packages:
