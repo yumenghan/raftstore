@@ -63,13 +63,18 @@ func (server *Server) RawScan(_ context.Context, req *kvrpcpb.RawScanRequest) (*
 	}
 	var kvPairs []*kvrpcpb.KvPair
 	iterCF := reader.IterCF(req.GetCf())
-	for iterCF.Valid() {
+	if req.GetStartKey() != nil {
+		iterCF.Seek(req.GetStartKey())
+	}
+	var getNum uint32
+	for iterCF.Valid() && getNum < req.GetLimit() {
 		item := iterCF.Item()
 		val, err := item.Value()
 		if err != nil {
 			kvPairs = append(kvPairs, &kvrpcpb.KvPair{
 				Error: &kvrpcpb.KeyError{Abort: fmt.Sprintf("key %v abort err %v", item.Key(), err)},
 			})
+			getNum++
 			iterCF.Next()
 			continue
 		}
@@ -77,6 +82,7 @@ func (server *Server) RawScan(_ context.Context, req *kvrpcpb.RawScanRequest) (*
 			Key:   item.Key(),
 			Value: val,
 		})
+		getNum++
 		iterCF.Next()
 	}
 	return &kvrpcpb.RawScanResponse{Kvs: kvPairs}, nil

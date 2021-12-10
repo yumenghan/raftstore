@@ -19,9 +19,7 @@ func NewStandAloneStorage(conf *config.Config) *StandAloneStorage {
 	// Your Code Here (1).
 	s := &StandAloneStorage{}
 	kvEngine := engine_util.CreateDB(conf.DBPath, false)
-	raftPath := conf.DBPath + "/raft/"
-	raftEngine := engine_util.CreateDB(raftPath, conf.Raft)
-	s.engine = engine_util.NewEngines(kvEngine, raftEngine, conf.DBPath, raftPath)
+	s.engine = engine_util.NewEngines(kvEngine, nil, conf.DBPath, "")
 	return s
 }
 
@@ -32,9 +30,10 @@ func (s *StandAloneStorage) Start() error {
 
 func (s *StandAloneStorage) Stop() error {
 	// Your Code Here (1).
-	if err := s.engine.Close(); err != nil {
+	if err := s.engine.Kv.Close(); err != nil {
 		return fmt.Errorf("storage stop err:%v", err)
 	}
+
 	return nil
 }
 
@@ -47,7 +46,7 @@ func (s *StandAloneStorage) Write(ctx *kvrpcpb.Context, batch []storage.Modify) 
 	// Your Code Here (1).
 	writeBatch := engine_util.WriteBatch{}
 	for _, b := range batch {
-		writeBatch.SetCF(b.Cf(), engine_util.KeyWithCF(b.Cf(), b.Key()), b.Value())
+		writeBatch.SetCF(b.Cf(), b.Key(), b.Value())
 	}
 	writeBatch.MustWriteToDB(s.engine.Kv)
 	return nil

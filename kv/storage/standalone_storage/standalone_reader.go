@@ -13,7 +13,7 @@ type standaloneReader struct {
 
 func (s standaloneReader) GetCF(cf string, key []byte) ([]byte, error) {
 	s.txn = s.engine.Kv.NewTransaction(false)
-	res, err := engine_util.GetCF(s.engine.Kv, cf, engine_util.KeyWithCF(cf, key))
+	res, err := engine_util.GetCF(s.engine.Kv, cf, key)
 	if err != nil {
 		return nil, fmt.Errorf("reader GetCF err:%v", err)
 	}
