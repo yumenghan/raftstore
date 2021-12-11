@@ -15,10 +15,13 @@ func (server *Server) RawGet(_ context.Context, req *kvrpcpb.RawGetRequest) (*kv
 	// Your Code Here (1).
 	reader, err := server.storage.Reader(req.Context)
 	if err != nil {
-		return &kvrpcpb.RawGetResponse{NotFound: true, Error: fmt.Sprintf("storage reader get err:%v", err)}, nil
+		return &kvrpcpb.RawGetResponse{NotFound: true}, nil
 	}
 	val, err := reader.GetCF(req.GetCf(), req.GetKey())
 	if err != nil {
+		return &kvrpcpb.RawGetResponse{NotFound: true, Error: err.Error()}, nil
+	}
+	if val == nil {
 		return &kvrpcpb.RawGetResponse{NotFound: true}, nil
 	}
 	return &kvrpcpb.RawGetResponse{Value: val}, nil

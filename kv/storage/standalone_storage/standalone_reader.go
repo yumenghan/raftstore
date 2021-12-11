@@ -15,7 +15,10 @@ func (s standaloneReader) GetCF(cf string, key []byte) ([]byte, error) {
 	s.txn = s.engine.Kv.NewTransaction(false)
 	res, err := engine_util.GetCF(s.engine.Kv, cf, key)
 	if err != nil {
-		return nil, fmt.Errorf("reader GetCF err:%v", err)
+		if err == badger.ErrKeyNotFound {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("engine GetCF cf:%s key:%s err:%v", cf, key, err)
 	}
 	return res, nil
 }
