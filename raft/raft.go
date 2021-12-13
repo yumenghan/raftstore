@@ -165,7 +165,21 @@ func newRaft(c *Config) *Raft {
 		panic(err.Error())
 	}
 	// Your Code Here (2A).
-	return nil
+	r := &Raft{
+		id:               c.ID,
+		State:            StateFollower,
+		electionTimeout:  c.ElectionTick,
+		heartbeatTimeout: c.HeartbeatTick,
+	}
+	rLog := newLog(c.Storage)
+
+	r.Prs = make(map[uint64]*Progress)
+	for _, p := range c.peers {
+		r.Prs[p] = &Progress{}
+	}
+
+	r.RaftLog = rLog
+	return r
 }
 
 // sendAppend sends an append RPC with new entries (if any) and the
@@ -207,6 +221,7 @@ func (r *Raft) Step(m pb.Message) error {
 	// Your Code Here (2A).
 	switch r.State {
 	case StateFollower:
+
 	case StateCandidate:
 	case StateLeader:
 	}
