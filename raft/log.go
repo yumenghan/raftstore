@@ -56,6 +56,7 @@ type RaftLog struct {
 // to the state that it just commits and applies the latest snapshot.
 func newLog(storage Storage) *RaftLog {
 	// Your Code Here (2A).
+
 	rLog := &RaftLog{
 		storage: storage,
 	}

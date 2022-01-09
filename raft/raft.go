@@ -171,6 +171,17 @@ func newRaft(c *Config) *Raft {
 		electionTimeout:  c.ElectionTick,
 		heartbeatTimeout: c.HeartbeatTick,
 	}
+	// confState
+	hardState, _, err := c.Storage.InitialState()
+	if err != nil {
+		panic(err.Error())
+	}
+	// init hardState
+	if !IsEmptyHardState(hardState) {
+		r.RaftLog.committed = hardState.Commit
+		r.Term = hardState.Term
+		r.Vote = hardState.Vote
+	}
 	rLog := newLog(c.Storage)
 
 	r.Prs = make(map[uint64]*Progress)
@@ -196,7 +207,22 @@ func (r *Raft) sendHeartbeat(to uint64) {
 
 // tick advances the internal logical clock by a single tick.
 func (r *Raft) tick() {
-	// Your Code Here (2A).
+	r.heartbeatElapsed++
+	r.electionElapsed++
+
+	if r.electionElapsed >= r.electionTimeout {
+		r.electionElapsed = 0
+		r.Step(pb.Message{From: r.id, MsgType: pb.MessageType_MsgHup})
+	}
+
+	if r.Lead != r.id {
+		return
+	}
+
+	if r.heartbeatElapsed >= r.heartbeatTimeout {
+		r.heartbeatElapsed = 0
+		r.Step(pb.Message{From: r.id, MsgType: pb.MessageType_MsgHeartbeat})
+	}
 }
 
 // becomeFollower transform this peer's state to Follower
@@ -221,11 +247,20 @@ func (r *Raft) Step(m pb.Message) error {
 	// Your Code Here (2A).
 	switch r.State {
 	case StateFollower:
-
+		switch m.MsgType {
+		case pb.MessageType_MsgHup:
+			r.handleMsgHup(m)
+		}
 	case StateCandidate:
 	case StateLeader:
 	}
 	return nil
+}
+
+func (r *Raft) handleMsgHup(m pb.Message) {
+	r.becomeCandidate()
+	// send
+
 }
 
 // handleAppendEntries handle AppendEntries RPC request
