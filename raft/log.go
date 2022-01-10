@@ -94,3 +94,23 @@ func (l *RaftLog) Term(i uint64) (uint64, error) {
 	// Your Code Here (2A).
 	return 0, nil
 }
+
+func (l *RaftLog) isUpToDate(lastIndex uint64, logTerm uint64) bool {
+	return true
+}
+
+func (l *RaftLog) maybeAppend(index uint64, logTerm uint64, committed uint64, entries []*pb.Entry) (lastNewIndex uint64, ok bool) {
+	if !l.matchTerm(index, logTerm) {
+		return 0, false
+	}
+	lastNewi := index + uint64(len(entries))
+	return lastNewi, true
+}
+
+func (l *RaftLog) matchTerm(index, LogTerm uint64) bool {
+	term, err := l.Term(index)
+	if err != nil {
+		return false
+	}
+	return term == LogTerm
+}

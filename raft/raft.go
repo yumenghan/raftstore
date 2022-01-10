@@ -205,6 +205,14 @@ func (r *Raft) sendHeartbeat(to uint64) {
 	// Your Code Here (2A).
 }
 
+func (r *Raft) send(msg pb.Message) {
+	r.msgs = append(r.msgs, msg)
+}
+
+func (r *Raft) broadcastAppend() {
+
+}
+
 // tick advances the internal logical clock by a single tick.
 func (r *Raft) tick() {
 	r.heartbeatElapsed++
@@ -228,30 +236,72 @@ func (r *Raft) tick() {
 // becomeFollower transform this peer's state to Follower
 func (r *Raft) becomeFollower(term uint64, lead uint64) {
 	// Your Code Here (2A).
+	r.Term = term
+	r.Lead = lead
+	r.State = StateFollower
 }
 
 // becomeCandidate transform this peer's state to candidate
 func (r *Raft) becomeCandidate() {
 	// Your Code Here (2A).
+	r.State = StateCandidate
+	r.Term = r.Term + 1
+	// 给自己投票
+	r.Vote = r.id
+	r.votes = make(map[uint64]bool, len(r.Prs))
 }
 
 // becomeLeader transform this peer's state to leader
 func (r *Raft) becomeLeader() {
 	// Your Code Here (2A).
 	// NOTE: Leader should propose a noop entry on its term
+	r.Lead = r.id
+	r.State = StateLeader
+
 }
 
 // Step the entrance of handle message, see `MessageType`
 // on `eraftpb.proto` for what msgs should be handled
 func (r *Raft) Step(m pb.Message) error {
 	// Your Code Here (2A).
+	switch {
+	case m.Term > r.Term:
+		switch {
+		default:
+			if m.GetMsgType() == pb.MessageType_MsgAppend {
+				r.becomeFollower(m.GetTerm(), m.GetFrom())
+			}
+		}
+	case m.GetTerm() < r.Term:
+		if m.GetMsgType() == pb.MessageType_MsgAppend {
+			r.send(pb.Message{From: r.id, To: m.GetFrom(), MsgType: pb.MessageType_MsgAppendResponse})
+		}
+		return nil
+	}
+
 	switch r.State {
 	case StateFollower:
 		switch m.MsgType {
 		case pb.MessageType_MsgHup:
+			r.electionElapsed = 0
 			r.handleMsgHup(m)
+		case pb.MessageType_MsgRequestVote:
+			r.electionElapsed = 0
+			r.handleMsgRequestVote(m)
+		case pb.MessageType_MsgAppend:
+			r.electionElapsed = 0
+			r.Lead = m.GetFrom()
+			r.handleAppendEntries(m)
 		}
+
 	case StateCandidate:
+		switch m.MsgType {
+		case pb.MessageType_MsgRequestVoteResponse:
+			if r.pollQuorum(m) {
+				r.becomeLeader()
+
+			}
+		}
 	case StateLeader:
 	}
 	return nil
@@ -259,13 +309,70 @@ func (r *Raft) Step(m pb.Message) error {
 
 func (r *Raft) handleMsgHup(m pb.Message) {
 	r.becomeCandidate()
-	// send
+	r.pollQuorum(m)
+	if len(r.Prs) == 1 {
+		r.becomeLeader()
+		return
+	}
+	for id, _ := range r.Prs {
+		if id == r.id {
+			continue
+		}
+		r.send(pb.Message{Term: r.Term, To: id, MsgType: pb.MessageType_MsgRequestVote, Index: r.RaftLog.LastIndex()})
+	}
+}
 
+func (r *Raft) handleMsgRequestVote(m pb.Message) {
+	// 1. r.Vote 还未投票
+	// 2. m.Term > r.Term
+	// 3. log 足够新
+	canVote := r.Vote == None && m.GetTerm() > r.Term
+	if canVote && r.RaftLog.isUpToDate(m.GetIndex(), m.GetLogTerm()) {
+		r.Vote = m.GetFrom()
+		r.send(pb.Message{From: r.id, To: m.GetFrom(), Term: r.Term, MsgType: pb.MessageType_MsgRequestVoteResponse, Reject: false})
+	} else {
+		r.send(pb.Message{From: r.id, To: m.GetFrom(), Term: r.Term, MsgType: pb.MessageType_MsgRequestVoteResponse, Reject: true})
+	}
+}
+
+func (r *Raft) pollQuorum(m pb.Message) bool {
+	// 1.计算是否满足 quorum ; 三种状态 1、win  2、lost  3、pending
+	if !m.Reject {
+		r.votes[m.GetFrom()] = true
+	}
+
+	voteInfo := [2]int{}
+	for id := range r.Prs {
+		v, voted := r.votes[id]
+		if !voted {
+			continue
+		}
+
+		if v {
+			voteInfo[1]++
+		} else {
+			voteInfo[0]++
+		}
+	}
+
+	q := len(r.Prs)/2 + 1
+	if voteInfo[1] >= q {
+		return true
+	}
+	return false
 }
 
 // handleAppendEntries handle AppendEntries RPC request
 func (r *Raft) handleAppendEntries(m pb.Message) {
 	// Your Code Here (2A).
+	if m.GetIndex() < r.RaftLog.committed {
+		r.send(pb.Message{From: r.id, To: m.GetFrom(), MsgType: pb.MessageType_MsgAppendResponse, Index: r.RaftLog.committed})
+		return
+	}
+
+	if lastNewIndex, ok := r.RaftLog.maybeAppend(m.GetIndex(), m.GetLogTerm(), m.GetCommit(), m.GetEntries()); ok {
+		r.send(pb.Message{From: r.id, To: m.GetFrom(), MsgType: pb.MessageType_MsgAppendResponse, Index: lastNewIndex})
+	}
 }
 
 // handleHeartbeat handle Heartbeat RPC request
