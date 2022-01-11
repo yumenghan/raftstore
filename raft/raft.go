@@ -229,7 +229,7 @@ func (r *Raft) tick() {
 
 	if r.heartbeatElapsed >= r.heartbeatTimeout {
 		r.heartbeatElapsed = 0
-		r.Step(pb.Message{From: r.id, MsgType: pb.MessageType_MsgHeartbeat})
+		r.Step(pb.Message{From: r.id, MsgType: pb.MessageType_MsgBeat})
 	}
 }
 
@@ -265,7 +265,8 @@ func (r *Raft) becomeLeader() {
 func (r *Raft) Step(m pb.Message) error {
 	// Your Code Here (2A).
 	switch {
-	case m.Term > r.Term:
+	case m.GetTerm() == 0:
+	case m.GetTerm() > r.Term:
 		switch {
 		default:
 			if m.GetMsgType() == pb.MessageType_MsgAppend {
@@ -292,6 +293,11 @@ func (r *Raft) Step(m pb.Message) error {
 			r.electionElapsed = 0
 			r.Lead = m.GetFrom()
 			r.handleAppendEntries(m)
+		case pb.MessageType_MsgHeartbeat:
+			r.electionElapsed = 0
+			r.Lead = m.GetFrom()
+			r.handleHeartbeat(m)
+
 		}
 
 	case StateCandidate:
@@ -299,10 +305,19 @@ func (r *Raft) Step(m pb.Message) error {
 		case pb.MessageType_MsgRequestVoteResponse:
 			if r.pollQuorum(m) {
 				r.becomeLeader()
-
 			}
+		case pb.MessageType_MsgHup:
+			r.handleMsgHup(m)
 		}
 	case StateLeader:
+		switch m.MsgType {
+		case pb.MessageType_MsgBeat:
+			r.handleMsgBeat(m)
+		case pb.MessageType_MsgHeartbeatResponse:
+			r.handleMsgHeartbeatResponse(m)
+		case pb.MessageType_MsgPropose:
+
+		}
 	}
 	return nil
 }
@@ -318,7 +333,7 @@ func (r *Raft) handleMsgHup(m pb.Message) {
 		if id == r.id {
 			continue
 		}
-		r.send(pb.Message{Term: r.Term, To: id, MsgType: pb.MessageType_MsgRequestVote, Index: r.RaftLog.LastIndex()})
+		r.send(pb.Message{From: r.id, Term: r.Term, To: id, MsgType: pb.MessageType_MsgRequestVote, Index: r.RaftLog.LastIndex()})
 	}
 }
 
@@ -375,9 +390,27 @@ func (r *Raft) handleAppendEntries(m pb.Message) {
 	}
 }
 
+func (r *Raft) handleMsgBeat(m pb.Message) {
+	for id := range r.Prs {
+		if id == r.id {
+			continue
+		}
+		r.send(pb.Message{From: r.id, To: id, Term: r.Term, MsgType: pb.MessageType_MsgHeartbeat})
+	}
+}
+
 // handleHeartbeat handle Heartbeat RPC request
 func (r *Raft) handleHeartbeat(m pb.Message) {
 	// Your Code Here (2A).
+	r.send(pb.Message{From: r.id, To: m.GetFrom(), MsgType: pb.MessageType_MsgHeartbeatResponse})
+}
+
+func (r *Raft) handleMsgHeartbeatResponse(m pb.Message) {
+
+}
+
+func (r *Raft) handleMsgPropose(m pb.Message) {
+
 }
 
 // handleSnapshot handle Snapshot RPC request
