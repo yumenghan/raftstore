@@ -16,6 +16,7 @@ package raft
 
 import (
 	"errors"
+	"math/rand"
 
 	pb "github.com/pingcap-incubator/tinykv/proto/pkg/eraftpb"
 )
@@ -135,6 +136,8 @@ type Raft struct {
 	heartbeatTimeout int
 	// baseline of election interval
 	electionTimeout int
+
+	randomizedElectionTimeout int
 	// number of ticks since it reached last heartbeatTimeout.
 	// only leader keeps heartbeatElapsed.
 	heartbeatElapsed int
@@ -210,7 +213,12 @@ func (r *Raft) send(msg pb.Message) {
 }
 
 func (r *Raft) broadcastAppend() {
-
+	for id := range r.Prs {
+		if id == r.id {
+			continue
+		}
+		r.send(pb.Message{From: r.id, To: id, Term: r.Term, MsgType: pb.MessageType_MsgAppend})
+	}
 }
 
 // tick advances the internal logical clock by a single tick.
@@ -218,7 +226,7 @@ func (r *Raft) tick() {
 	r.heartbeatElapsed++
 	r.electionElapsed++
 
-	if r.electionElapsed >= r.electionTimeout {
+	if r.electionElapsed >= r.randomizedElectionTimeout {
 		r.electionElapsed = 0
 		r.Step(pb.Message{From: r.id, MsgType: pb.MessageType_MsgHup})
 	}
@@ -236,6 +244,7 @@ func (r *Raft) tick() {
 // becomeFollower transform this peer's state to Follower
 func (r *Raft) becomeFollower(term uint64, lead uint64) {
 	// Your Code Here (2A).
+	r.reset(term)
 	r.Term = term
 	r.Lead = lead
 	r.State = StateFollower
@@ -245,19 +254,31 @@ func (r *Raft) becomeFollower(term uint64, lead uint64) {
 func (r *Raft) becomeCandidate() {
 	// Your Code Here (2A).
 	r.State = StateCandidate
-	r.Term = r.Term + 1
+	r.reset(r.Term + 1)
 	// 给自己投票
 	r.Vote = r.id
-	r.votes = make(map[uint64]bool, len(r.Prs))
 }
 
 // becomeLeader transform this peer's state to leader
 func (r *Raft) becomeLeader() {
 	// Your Code Here (2A).
 	// NOTE: Leader should propose a noop entry on its term
+	r.reset(r.Term)
 	r.Lead = r.id
 	r.State = StateLeader
+}
 
+func (r *Raft) reset(term uint64) {
+	if r.Term != term {
+		r.Term = term
+		r.Vote = None
+	}
+	r.Lead = None
+
+	r.electionElapsed = 0
+	r.heartbeatElapsed = 0
+	r.votes = make(map[uint64]bool, len(r.Prs))
+	r.randomizedElectionTimeout = r.electionTimeout + rand.Intn(r.electionTimeout)
 }
 
 // Step the entrance of handle message, see `MessageType`
@@ -269,8 +290,12 @@ func (r *Raft) Step(m pb.Message) error {
 	case m.GetTerm() > r.Term:
 		switch {
 		default:
-			if m.GetMsgType() == pb.MessageType_MsgAppend {
+			// 如果 msg 的 term 较大 且当前是 app、 heartbeat、snap 消息， 不管当前 state 是啥， 直接转为 follower
+			if m.GetMsgType() == pb.MessageType_MsgAppend || m.GetMsgType() == pb.MessageType_MsgHeartbeat || m.GetMsgType() == pb.MessageType_MsgSnapshot {
 				r.becomeFollower(m.GetTerm(), m.GetFrom())
+			} else {
+				// 可能在选举
+				r.becomeFollower(m.GetTerm(), None)
 			}
 		}
 	case m.GetTerm() < r.Term:
@@ -305,9 +330,13 @@ func (r *Raft) Step(m pb.Message) error {
 		case pb.MessageType_MsgRequestVoteResponse:
 			if r.pollQuorum(m) {
 				r.becomeLeader()
+				r.broadcastAppend()
 			}
 		case pb.MessageType_MsgHup:
 			r.handleMsgHup(m)
+		case pb.MessageType_MsgAppend:
+			r.becomeFollower(m.GetTerm(), m.GetFrom())
+			r.handleAppendEntries(m)
 		}
 	case StateLeader:
 		switch m.MsgType {
@@ -316,7 +345,6 @@ func (r *Raft) Step(m pb.Message) error {
 		case pb.MessageType_MsgHeartbeatResponse:
 			r.handleMsgHeartbeatResponse(m)
 		case pb.MessageType_MsgPropose:
-
 		}
 	}
 	return nil
@@ -324,6 +352,7 @@ func (r *Raft) Step(m pb.Message) error {
 
 func (r *Raft) handleMsgHup(m pb.Message) {
 	r.becomeCandidate()
+	// 给自己投票
 	r.pollQuorum(m)
 	if len(r.Prs) == 1 {
 		r.becomeLeader()
@@ -341,7 +370,9 @@ func (r *Raft) handleMsgRequestVote(m pb.Message) {
 	// 1. r.Vote 还未投票
 	// 2. m.Term > r.Term
 	// 3. log 足够新
-	canVote := r.Vote == None && m.GetTerm() > r.Term
+	// 4. 投票消息丢失， candidate 重新请求 vote
+	// 5.
+	canVote := r.Vote == m.GetFrom() || (r.Vote == None && r.Lead == None) || (r.Vote == None && m.GetTerm() > r.Term)
 	if canVote && r.RaftLog.isUpToDate(m.GetIndex(), m.GetLogTerm()) {
 		r.Vote = m.GetFrom()
 		r.send(pb.Message{From: r.id, To: m.GetFrom(), Term: r.Term, MsgType: pb.MessageType_MsgRequestVoteResponse, Reject: false})
