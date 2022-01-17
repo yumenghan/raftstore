@@ -14,7 +14,9 @@
 
 package raft
 
-import pb "github.com/pingcap-incubator/tinykv/proto/pkg/eraftpb"
+import (
+	pb "github.com/pingcap-incubator/tinykv/proto/pkg/eraftpb"
+)
 
 // RaftLog manage the log entries, its struct look like:
 //
@@ -50,17 +52,30 @@ type RaftLog struct {
 	pendingSnapshot *pb.Snapshot
 
 	// Your Data Here (2A).
+	offset uint64
 }
 
 // newLog returns log using the given storage. It recovers the log
 // to the state that it just commits and applies the latest snapshot.
 func newLog(storage Storage) *RaftLog {
 	// Your Code Here (2A).
-
 	rLog := &RaftLog{
 		storage: storage,
 	}
+	// 从 storage 中初始化 log
+	firstIndex, err := storage.FirstIndex()
+	if err != nil {
+		panic(err)
+	}
 
+	lastIndex, err := storage.LastIndex()
+	if err != nil {
+		panic(err)
+	}
+
+	rLog.committed = firstIndex - 1
+	rLog.applied = firstIndex - 1
+	rLog.offset = lastIndex + 1
 	return rLog
 }
 
@@ -73,38 +88,152 @@ func (l *RaftLog) maybeCompact() {
 
 // unstableEntries return all the unstable entries
 func (l *RaftLog) unstableEntries() []pb.Entry {
-	// Your Code Here (2A).
-	return nil
+	if len(l.entries) == 0 {
+		return nil
+	}
+	return l.entries
 }
 
 // nextEnts returns all the committed but not applied entries
 func (l *RaftLog) nextEnts() (ents []pb.Entry) {
 	// Your Code Here (2A).
+
 	return nil
 }
 
 // LastIndex return the last index of the log entries
 func (l *RaftLog) LastIndex() uint64 {
-	// Your Code Here (2A).
-	return 0
+	// 查 entries
+	length := len(l.entries)
+	if length != 0 {
+		return l.offset + uint64(length) - 1
+	}
+	// 查 storage
+	i, err := l.storage.LastIndex()
+	if err != nil {
+		panic(err)
+	}
+	return i
 }
 
 // Term return the term of the entry in the given index
 func (l *RaftLog) Term(i uint64) (uint64, error) {
-	// Your Code Here (2A).
+	if i < l.offset {
+		return 0, nil
+	}
+	// 1.先查 unstable
+	last := l.LastIndex()
+	if i < last {
+		return l.entries[i-l.offset].Term, nil
+	}
+	// 2.查 storage
+	term, err := l.storage.Term(i)
+	if err == nil {
+		return term, nil
+	}
+
+	if err == ErrCompacted || err == ErrUnavailable {
+		return 0, err
+	}
+	//
 	return 0, nil
 }
 
 func (l *RaftLog) isUpToDate(lastIndex uint64, logTerm uint64) bool {
-	return true
+	nowTerm, err := l.Term(l.LastIndex())
+	if err != nil {
+		return true
+	}
+	if logTerm > nowTerm {
+		return true
+	}
+	if logTerm == nowTerm && lastIndex >= l.LastIndex() {
+		return true
+	}
+	return false
 }
 
 func (l *RaftLog) maybeAppend(index uint64, logTerm uint64, committed uint64, entries []*pb.Entry) (lastNewIndex uint64, ok bool) {
 	if !l.matchTerm(index, logTerm) {
 		return 0, false
 	}
-	lastNewi := index + uint64(len(entries))
-	return lastNewi, true
+	lastNewIndex = index + uint64(len(entries))
+	var notMatchIndex uint64
+	for _, entry := range entries {
+		if !l.matchTerm(entry.Index, entry.Term) {
+			notMatchIndex = entry.Index
+		}
+	}
+	if notMatchIndex > 0 {
+		offset := index + 1
+		appendEntries := entries[lastNewIndex-offset:]
+		l.append(appendEntries)
+	}
+
+	if ci := min(lastNewIndex, committed); l.committed < ci {
+		l.committed = ci
+	}
+	return lastNewIndex, true
+}
+
+func (l *RaftLog) append(entries []*pb.Entry) uint64 {
+	if len(entries) == 0 {
+		return l.LastIndex()
+	}
+	l.truncateAndAppend(entries)
+	return l.LastIndex()
+}
+
+func (l *RaftLog) truncateAndAppend(entries []*pb.Entry) {
+	after := entries[0].Index
+	switch {
+	case after == l.offset+uint64(len(l.entries)):
+		l.entries = append(l.entries, l.copyPointerEntries(entries)...)
+	case after <= l.offset:
+		//u.logger.Infof("replace the unstable entries from index %d", after)
+		// The log is being truncated to before our current offset
+		// portion, so set the offset and replace the entries
+		l.offset = after
+		l.entries = l.copyPointerEntries(entries)
+	default:
+		// truncate to after and copy to u.entries
+		//u.logger.Infof("truncate the unstable entries before index %d", after)
+
+		l.entries = append([]pb.Entry{}, l.entries[l.offset:after]...)
+		l.entries = append(l.entries, l.copyPointerEntries(entries)...)
+	}
+}
+
+func (l *RaftLog) startAt(i uint64) ([]*pb.Entry, error) {
+	if i < l.offset {
+		return nil, ErrCompacted
+	}
+	if i-l.offset > uint64(len(l.entries)) {
+		return nil, ErrUnavailable
+	}
+	return l.copyEntries(l.entries[i-l.offset:]), nil
+}
+
+func (l *RaftLog) copyPointerEntries(entries []*pb.Entry) []pb.Entry {
+	if len(entries) == 0 {
+		return []pb.Entry{}
+	}
+	res := make([]pb.Entry, 0, len(entries))
+	for _, entry := range entries {
+		res = append(res, *entry)
+	}
+	return res
+}
+
+func (l *RaftLog) copyEntries(entries []pb.Entry) []*pb.Entry {
+	if len(entries) == 0 {
+		return []*pb.Entry{}
+	}
+	res := make([]*pb.Entry, 0, len(entries))
+	for _, entry := range entries {
+		res = append(res, &entry)
+	}
+	return res
 }
 
 func (l *RaftLog) matchTerm(index, LogTerm uint64) bool {

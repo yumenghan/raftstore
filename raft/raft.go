@@ -217,7 +217,24 @@ func (r *Raft) broadcastAppend() {
 		if id == r.id {
 			continue
 		}
-		r.send(pb.Message{From: r.id, To: id, Term: r.Term, MsgType: pb.MessageType_MsgAppend})
+		//
+		m := pb.Message{}
+		m.To = id
+		m.From = r.id
+		m.MsgType = pb.MessageType_MsgAppend
+		m.Term = r.Term
+
+		term, errt := r.RaftLog.Term(r.Prs[id].Next - 1)
+		ents, erre := r.RaftLog.startAt(r.Prs[id].Match)
+
+		if errt != nil || erre != nil {
+
+		} else {
+			m.LogTerm = term
+			m.Entries = ents
+			m.Commit = r.RaftLog.committed
+			r.send(m)
+		}
 	}
 }
 
@@ -262,10 +279,20 @@ func (r *Raft) becomeCandidate() {
 // becomeLeader transform this peer's state to leader
 func (r *Raft) becomeLeader() {
 	// Your Code Here (2A).
-	// NOTE: Leader should propose a noop entry on its term
+
 	r.reset(r.Term)
 	r.Lead = r.id
 	r.State = StateLeader
+
+	for _, pr := range r.Prs {
+		pr.Match = r.RaftLog.LastIndex()
+		pr.Next = r.RaftLog.LastIndex() + 1 //初始化为领导人最后索引值加一
+	}
+
+	// NOTE: Leader should propose a noop entry on its term
+	r.appendEntry([]*pb.Entry{
+		&pb.Entry{Data: nil},
+	})
 }
 
 func (r *Raft) reset(term uint64) {
@@ -345,6 +372,7 @@ func (r *Raft) Step(m pb.Message) error {
 		case pb.MessageType_MsgHeartbeatResponse:
 			r.handleMsgHeartbeatResponse(m)
 		case pb.MessageType_MsgPropose:
+			r.handleMsgPropose(m)
 		}
 	}
 	return nil
@@ -441,7 +469,25 @@ func (r *Raft) handleMsgHeartbeatResponse(m pb.Message) {
 }
 
 func (r *Raft) handleMsgPropose(m pb.Message) {
+	if len(m.GetEntries()) == 0 {
+		panic("msg propose empty")
+	}
+	// 处理 conf change
+	//for i := range m.GetEntries() {
+	//
+	//}
+	r.appendEntry(m.GetEntries())
+	r.broadcastAppend()
+}
 
+func (r *Raft) appendEntry(entries []*pb.Entry) {
+	lastIndex := r.RaftLog.LastIndex()
+	for i := range entries {
+		entries[i].Term = r.Term
+		entries[i].Index = lastIndex + uint64(i) + 1
+	}
+
+	r.RaftLog.append(entries)
 }
 
 // handleSnapshot handle Snapshot RPC request
