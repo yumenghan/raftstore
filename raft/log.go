@@ -91,14 +91,20 @@ func (l *RaftLog) unstableEntries() []pb.Entry {
 	if len(l.entries) == 0 {
 		return nil
 	}
-	return l.entries
+	if l.stabled+1 < l.offset {
+		return nil
+	}
+
+	return l.entries[l.stabled+1-l.offset:]
 }
 
 // nextEnts returns all the committed but not applied entries
 func (l *RaftLog) nextEnts() (ents []pb.Entry) {
 	// Your Code Here (2A).
-
-	return nil
+	if l.committed < l.applied {
+		return nil
+	}
+	return l.entries[l.applied-l.offset+1 : l.committed-l.offset+1]
 }
 
 // LastIndex return the last index of the log entries
@@ -123,7 +129,7 @@ func (l *RaftLog) Term(i uint64) (uint64, error) {
 	}
 	// 1.先查 unstable
 	last := l.LastIndex()
-	if i < last {
+	if i <= last {
 		return l.entries[i-l.offset].Term, nil
 	}
 	// 2.查 storage
@@ -206,7 +212,11 @@ func (l *RaftLog) truncateAndAppend(entries []*pb.Entry) {
 
 func (l *RaftLog) startAt(i uint64) ([]*pb.Entry, error) {
 	if i < l.offset {
+		// 可能返回 storage 中的 entries
 		return nil, ErrCompacted
+	}
+	if i > l.LastIndex() {
+		return nil, nil
 	}
 	if i-l.offset > uint64(len(l.entries)) {
 		return nil, ErrUnavailable

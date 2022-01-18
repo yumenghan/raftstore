@@ -16,6 +16,7 @@ package raft
 
 import (
 	"errors"
+	"github.com/gogo/protobuf/sortkeys"
 	"math/rand"
 
 	pb "github.com/pingcap-incubator/tinykv/proto/pkg/eraftpb"
@@ -200,7 +201,27 @@ func newRaft(c *Config) *Raft {
 // current commit index to the given peer. Returns true if a message was sent.
 func (r *Raft) sendAppend(to uint64) bool {
 	// Your Code Here (2A).
-	return false
+	m := pb.Message{}
+	m.To = to
+	m.From = r.id
+	m.MsgType = pb.MessageType_MsgAppend
+	m.Term = r.Term
+
+	pr := r.Prs[to]
+	term, errt := r.RaftLog.Term(pr.Next - 1)
+	ents, erre := r.RaftLog.startAt(pr.Next)
+
+	if errt != nil || erre != nil {
+
+		return false
+	} else {
+		m.LogTerm = term
+		m.Entries = ents
+		m.Commit = r.RaftLog.committed
+		m.Index = pr.Next - 1
+		r.send(m)
+	}
+	return true
 }
 
 // sendHeartbeat sends a heartbeat RPC to the given peer.
@@ -218,23 +239,7 @@ func (r *Raft) broadcastAppend() {
 			continue
 		}
 		//
-		m := pb.Message{}
-		m.To = id
-		m.From = r.id
-		m.MsgType = pb.MessageType_MsgAppend
-		m.Term = r.Term
-
-		term, errt := r.RaftLog.Term(r.Prs[id].Next - 1)
-		ents, erre := r.RaftLog.startAt(r.Prs[id].Match)
-
-		if errt != nil || erre != nil {
-
-		} else {
-			m.LogTerm = term
-			m.Entries = ents
-			m.Commit = r.RaftLog.committed
-			r.send(m)
-		}
+		r.sendAppend(id)
 	}
 }
 
@@ -373,6 +378,8 @@ func (r *Raft) Step(m pb.Message) error {
 			r.handleMsgHeartbeatResponse(m)
 		case pb.MessageType_MsgPropose:
 			r.handleMsgPropose(m)
+		case pb.MessageType_MsgAppendResponse:
+			r.handleMsgAppendResponse(m)
 		}
 	}
 	return nil
@@ -480,6 +487,77 @@ func (r *Raft) handleMsgPropose(m pb.Message) {
 	r.broadcastAppend()
 }
 
+func (r *Raft) handleMsgAppendResponse(m pb.Message) {
+	//
+	progress, ok := r.Prs[m.From]
+	if !ok {
+		return
+	}
+
+	if m.GetReject() {
+		progress.Match--
+		progress.Next = progress.Match + 1
+		r.sendAppend(m.GetFrom())
+		return
+	}
+
+	progress.Next = m.GetIndex() + 1
+	progress.Match = m.GetIndex()
+	if r.RaftLog.LastIndex() > progress.Match {
+		r.sendAppend(m.GetFrom())
+	}
+
+	if r.maybeCommit() {
+		r.broadcastAppend()
+	}
+
+}
+
+func (r *Raft) maybeCommit() bool {
+	// 如何确定一个消息是否能被 commit？
+	// 1.过半提交
+	// 2.确保 leader 在当前 term 已经有一条被 commit 日志
+	counter := make(map[uint64]int)
+	for _, p := range r.Prs {
+		cnt := counter[p.Match]
+		counter[p.Match] = cnt + 1
+	}
+
+	indexSeq := make([]uint64, 0, len(counter))
+	for index, _ := range counter {
+		if index > r.RaftLog.committed {
+			indexSeq = append(indexSeq, index)
+		}
+	}
+
+	sortkeys.Uint64s(indexSeq)
+	prevCnt := 0
+	for i := len(indexSeq) - 1; i >= 0; i-- {
+		index := indexSeq[i]
+		if index < r.RaftLog.committed {
+			// 落后太多
+			break
+		}
+		cnt := counter[index] + prevCnt
+		prevCnt = cnt
+		// if majority
+		if cnt > len(r.Prs)/2 {
+			term, err := r.RaftLog.Term(index)
+			if err != nil {
+				//log.Errorf("update leader commit get index [%d] err:%v", index, err)
+			}
+			if term == r.Term {
+				if index > r.RaftLog.committed {
+					r.RaftLog.committed = index
+					return true
+				}
+			}
+		}
+	}
+	// term != r.Term 大多数 log 的 term 不是自己的，不能 commit
+	return false
+}
+
 func (r *Raft) appendEntry(entries []*pb.Entry) {
 	lastIndex := r.RaftLog.LastIndex()
 	for i := range entries {
@@ -487,7 +565,14 @@ func (r *Raft) appendEntry(entries []*pb.Entry) {
 		entries[i].Index = lastIndex + uint64(i) + 1
 	}
 
-	r.RaftLog.append(entries)
+	index := r.RaftLog.append(entries)
+	pr := r.Prs[r.id]
+	if pr.Match < index {
+		pr.Match = index
+	}
+
+	pr.Next = max(pr.Next, index+1)
+	r.maybeCommit()
 }
 
 // handleSnapshot handle Snapshot RPC request
