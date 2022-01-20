@@ -393,11 +393,16 @@ func (r *Raft) handleMsgHup(m pb.Message) {
 		r.becomeLeader()
 		return
 	}
+
+	logTerm, err := r.RaftLog.Term(r.RaftLog.LastIndex())
+	if err != nil {
+		// todo
+	}
 	for id, _ := range r.Prs {
 		if id == r.id {
 			continue
 		}
-		r.send(pb.Message{From: r.id, Term: r.Term, To: id, MsgType: pb.MessageType_MsgRequestVote, Index: r.RaftLog.LastIndex()})
+		r.send(pb.Message{From: r.id, Term: r.Term, To: id, MsgType: pb.MessageType_MsgRequestVote, LogTerm: logTerm, Index: r.RaftLog.LastIndex()})
 	}
 }
 
@@ -447,7 +452,7 @@ func (r *Raft) pollQuorum(m pb.Message) bool {
 func (r *Raft) handleAppendEntries(m pb.Message) {
 	// Your Code Here (2A).
 	if m.GetIndex() < r.RaftLog.committed {
-		r.send(pb.Message{From: r.id, To: m.GetFrom(), MsgType: pb.MessageType_MsgAppendResponse, Index: r.RaftLog.committed})
+		r.send(pb.Message{From: r.id, To: m.GetFrom(), MsgType: pb.MessageType_MsgAppendResponse, Index: r.RaftLog.committed, Reject: true})
 		return
 	}
 

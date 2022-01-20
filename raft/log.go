@@ -168,11 +168,12 @@ func (l *RaftLog) maybeAppend(index uint64, logTerm uint64, committed uint64, en
 	for _, entry := range entries {
 		if !l.matchTerm(entry.Index, entry.Term) {
 			notMatchIndex = entry.Index
+			break
 		}
 	}
 	if notMatchIndex > 0 {
 		offset := index + 1
-		appendEntries := entries[lastNewIndex-offset:]
+		appendEntries := entries[notMatchIndex-offset:]
 		l.append(appendEntries)
 	}
 
@@ -241,7 +242,12 @@ func (l *RaftLog) copyEntries(entries []pb.Entry) []*pb.Entry {
 	}
 	res := make([]*pb.Entry, 0, len(entries))
 	for _, entry := range entries {
-		res = append(res, &entry)
+		res = append(res, &pb.Entry{
+			Term:      entry.Term,
+			Index:     entry.Index,
+			Data:      entry.Data,
+			EntryType: entry.EntryType,
+		})
 	}
 	return res
 }
