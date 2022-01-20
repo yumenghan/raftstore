@@ -15,6 +15,7 @@
 package raft
 
 import (
+	"fmt"
 	pb "github.com/pingcap-incubator/tinykv/proto/pkg/eraftpb"
 )
 
@@ -101,10 +102,50 @@ func (l *RaftLog) unstableEntries() []pb.Entry {
 // nextEnts returns all the committed but not applied entries
 func (l *RaftLog) nextEnts() (ents []pb.Entry) {
 	// Your Code Here (2A).
+
 	if l.committed < l.applied {
 		return nil
 	}
-	return l.entries[l.applied-l.offset+1 : l.committed-l.offset+1]
+	applied := l.applied + 1
+	committed := l.committed + 1
+	if l.checkOutRange(applied, committed) != nil {
+		return nil
+	}
+	var entries []pb.Entry
+	if applied < l.offset {
+		// 从 storage 中 find
+		storageEntries, err := l.storage.Entries(applied, l.offset)
+		if err == ErrCompacted {
+			return nil
+		} else if err == ErrUnavailable {
+			panic("storage entries err:" + err.Error())
+			return nil
+		} else if err != nil {
+			panic(err)
+		}
+	}
+
+	return l.entries[l.applied+1-l.offset : l.committed+1-l.offset]
+}
+
+func (l *RaftLog) FirstIndex() uint64 {
+	index, err := l.storage.FirstIndex()
+	if err != nil {
+		panic(err)
+	}
+	return index
+}
+
+func (l *RaftLog) checkOutRange(left, right uint64) error {
+	index := l.FirstIndex()
+	if left < index {
+		return ErrCompacted
+	}
+	length := l.LastIndex() + 1 - index
+	if right > length+index {
+		panic(fmt.Sprintf("out range left [%d] right [%d] length:[%d]", left, right, length))
+	}
+	return nil
 }
 
 // LastIndex return the last index of the log entries
