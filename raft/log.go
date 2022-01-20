@@ -123,9 +123,10 @@ func (l *RaftLog) nextEnts() (ents []pb.Entry) {
 		} else if err != nil {
 			panic(err)
 		}
+		entries = storageEntries
 	}
 
-	return l.entries[l.applied+1-l.offset : l.committed+1-l.offset]
+	return entries
 }
 
 func (l *RaftLog) FirstIndex() uint64 {
