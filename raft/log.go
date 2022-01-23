@@ -77,6 +77,16 @@ func newLog(storage Storage) *RaftLog {
 	rLog.committed = firstIndex - 1
 	rLog.applied = firstIndex - 1
 	rLog.offset = lastIndex + 1
+	rLog.stabled = lastIndex
+	if lastIndex >= firstIndex {
+		entries, err := storage.Entries(firstIndex, lastIndex+1)
+		if err != nil {
+			panic(err)
+		}
+		rLog.entries = make([]pb.Entry, len(entries))
+		copy(rLog.entries, entries)
+		rLog.offset = entries[0].GetIndex()
+	}
 	return rLog
 }
 
@@ -125,6 +135,13 @@ func (l *RaftLog) nextEnts() (ents []pb.Entry) {
 		}
 		entries = storageEntries
 	}
+	if committed > l.offset {
+		u := max(applied, l.offset)
+		unstable := l.entries[u-l.offset : committed-l.offset]
+		if len(unstable) > 0 {
+			entries = append(entries, unstable...)
+		}
+	}
 
 	return entries
 }
@@ -166,12 +183,9 @@ func (l *RaftLog) LastIndex() uint64 {
 
 // Term return the term of the entry in the given index
 func (l *RaftLog) Term(i uint64) (uint64, error) {
-	if i < l.offset {
-		return 0, nil
-	}
 	// 1.先查 unstable
 	last := l.LastIndex()
-	if i <= last {
+	if i <= last && i >= l.offset {
 		return l.entries[i-l.offset].Term, nil
 	}
 	// 2.查 storage
@@ -213,6 +227,7 @@ func (l *RaftLog) maybeAppend(index uint64, logTerm uint64, committed uint64, en
 			break
 		}
 	}
+	// 计算开始复制的 entries
 	if notMatchIndex > 0 {
 		offset := index + 1
 		appendEntries := entries[notMatchIndex-offset:]
@@ -234,6 +249,7 @@ func (l *RaftLog) append(entries []*pb.Entry) uint64 {
 }
 
 func (l *RaftLog) truncateAndAppend(entries []*pb.Entry) {
+	// after index
 	after := entries[0].Index
 	switch {
 	case after == l.offset+uint64(len(l.entries)):
@@ -243,12 +259,16 @@ func (l *RaftLog) truncateAndAppend(entries []*pb.Entry) {
 		// The log is being truncated to before our current offset
 		// portion, so set the offset and replace the entries
 		l.offset = after
+		l.stabled = after - 1
 		l.entries = l.copyPointerEntries(entries)
 	default:
 		// truncate to after and copy to u.entries
 		//u.logger.Infof("truncate the unstable entries before index %d", after)
-
-		l.entries = append([]pb.Entry{}, l.entries[l.offset:after]...)
+		l.entries = append([]pb.Entry{}, l.entries[:after-l.offset]...)
+		lastIndex := l.entries[len(l.entries)-1].GetIndex()
+		if l.stabled > lastIndex {
+			l.stabled = lastIndex
+		}
 		l.entries = append(l.entries, l.copyPointerEntries(entries)...)
 	}
 }

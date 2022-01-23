@@ -452,13 +452,22 @@ func (r *Raft) pollQuorum(m pb.Message) bool {
 func (r *Raft) handleAppendEntries(m pb.Message) {
 	// Your Code Here (2A).
 	if m.GetIndex() < r.RaftLog.committed {
-		r.send(pb.Message{From: r.id, To: m.GetFrom(), MsgType: pb.MessageType_MsgAppendResponse, Index: r.RaftLog.committed, Reject: true})
+		r.send(pb.Message{From: r.id, To: m.GetFrom(), Term: r.Term, MsgType: pb.MessageType_MsgAppendResponse, Index: r.RaftLog.committed})
 		return
 	}
 
 	if lastNewIndex, ok := r.RaftLog.maybeAppend(m.GetIndex(), m.GetLogTerm(), m.GetCommit(), m.GetEntries()); ok {
-		r.send(pb.Message{From: r.id, To: m.GetFrom(), MsgType: pb.MessageType_MsgAppendResponse, Index: lastNewIndex})
+		r.send(pb.Message{From: r.id, To: m.GetFrom(), Term: r.Term, MsgType: pb.MessageType_MsgAppendResponse, Index: lastNewIndex})
+		return
 	}
+
+	// 当前 index 对应的 logTerm 不 match
+	lastIndex := r.RaftLog.LastIndex()
+	term, err := r.RaftLog.Term(lastIndex)
+	if err != nil {
+		panic(err)
+	}
+	r.send(pb.Message{To: m.GetFrom(), From: r.id, Term: r.Term, MsgType: pb.MessageType_MsgAppendResponse, Index: lastIndex, LogTerm: term, Reject: true})
 }
 
 func (r *Raft) handleMsgBeat(m pb.Message) {
