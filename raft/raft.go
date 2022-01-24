@@ -226,7 +226,16 @@ func (r *Raft) sendAppend(to uint64) bool {
 
 // sendHeartbeat sends a heartbeat RPC to the given peer.
 func (r *Raft) sendHeartbeat(to uint64) {
-	// Your Code Here (2A).
+	commit := min(r.Prs[to].Match, r.RaftLog.committed)
+	m := pb.Message{
+		From: r.id,
+		To:      to,
+		MsgType:    pb.MessageType_MsgHeartbeat,
+		Term: r.Term,
+		Commit:  commit,
+	}
+
+	r.send(m)
 }
 
 func (r *Raft) send(msg pb.Message) {
@@ -362,9 +371,13 @@ func (r *Raft) Step(m pb.Message) error {
 	case StateCandidate:
 		switch m.MsgType {
 		case pb.MessageType_MsgRequestVoteResponse:
-			if r.pollQuorum(m) {
+			voteRes := r.pollQuorum(m)
+			switch voteRes {
+			case VoteWin:
 				r.becomeLeader()
 				r.broadcastAppend()
+			case VoteLost:
+				r.becomeFollower(r.Term, None)
 			}
 		case pb.MessageType_MsgHup:
 			r.handleMsgHup(m)
@@ -423,19 +436,23 @@ func (r *Raft) handleMsgRequestVote(m pb.Message) {
 	}
 }
 
-func (r *Raft) pollQuorum(m pb.Message) bool {
+type VoteType int
+const (
+	VoteWin VoteType = 1
+	VoteLost VoteType = 2
+	VotePending VoteType = 3
+)
+func (r *Raft) pollQuorum(m pb.Message) VoteType {
 	// 1.计算是否满足 quorum ; 三种状态 1、win  2、lost  3、pending
-	if !m.Reject {
-		r.votes[m.GetFrom()] = true
-	}
-
+	r.votes[m.GetFrom()] = !m.GetReject()
 	voteInfo := [2]int{}
+	missing := 0
 	for id := range r.Prs {
 		v, voted := r.votes[id]
 		if !voted {
+			missing++
 			continue
 		}
-
 		if v {
 			voteInfo[1]++
 		} else {
@@ -445,9 +462,12 @@ func (r *Raft) pollQuorum(m pb.Message) bool {
 
 	q := len(r.Prs)/2 + 1
 	if voteInfo[1] >= q {
-		return true
+		return VoteWin
 	}
-	return false
+	if voteInfo[1] + missing >= q {
+		return VotePending
+	}
+	return VoteLost
 }
 
 // handleAppendEntries handle AppendEntries RPC request
@@ -477,7 +497,8 @@ func (r *Raft) handleMsgBeat(m pb.Message) {
 		if id == r.id {
 			continue
 		}
-		r.send(pb.Message{From: r.id, To: id, Term: r.Term, MsgType: pb.MessageType_MsgHeartbeat})
+
+		r.sendHeartbeat(id)
 	}
 }
 
@@ -488,7 +509,10 @@ func (r *Raft) handleHeartbeat(m pb.Message) {
 }
 
 func (r *Raft) handleMsgHeartbeatResponse(m pb.Message) {
-
+	pr := r.Prs[m.GetFrom()]
+	if pr.Match < r.RaftLog.LastIndex() {
+		r.sendAppend(m.GetFrom())
+	}
 }
 
 func (r *Raft) handleMsgPropose(m pb.Message) {
