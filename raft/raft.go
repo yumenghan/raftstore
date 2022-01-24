@@ -180,20 +180,20 @@ func newRaft(c *Config) *Raft {
 	if err != nil {
 		panic(err.Error())
 	}
+
+	r.RaftLog = newLog(c.Storage)
 	// init hardState
 	if !IsEmptyHardState(hardState) {
 		r.RaftLog.committed = hardState.Commit
 		r.Term = hardState.Term
 		r.Vote = hardState.Vote
 	}
-	rLog := newLog(c.Storage)
 
 	r.Prs = make(map[uint64]*Progress)
 	for _, p := range c.peers {
 		r.Prs[p] = &Progress{}
 	}
 
-	r.RaftLog = rLog
 	return r
 }
 
@@ -332,7 +332,9 @@ func (r *Raft) Step(m pb.Message) error {
 		}
 	case m.GetTerm() < r.Term:
 		if m.GetMsgType() == pb.MessageType_MsgAppend {
-			r.send(pb.Message{From: r.id, To: m.GetFrom(), MsgType: pb.MessageType_MsgAppendResponse})
+			r.send(pb.Message{From: r.id, To: m.GetFrom(), Term: r.Term, MsgType: pb.MessageType_MsgAppendResponse})
+		} else if m.GetMsgType() == pb.MessageType_MsgRequestVote {
+			r.send(pb.Message{From: r.id, To: m.GetFrom(), Term: r.Term, MsgType: pb.MessageType_MsgRequestVoteResponse, Reject: true})
 		}
 		return nil
 	}
