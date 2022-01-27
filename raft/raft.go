@@ -228,10 +228,10 @@ func (r *Raft) sendAppend(to uint64) bool {
 func (r *Raft) sendHeartbeat(to uint64) {
 	commit := min(r.Prs[to].Match, r.RaftLog.committed)
 	m := pb.Message{
-		From: r.id,
+		From:    r.id,
 		To:      to,
-		MsgType:    pb.MessageType_MsgHeartbeat,
-		Term: r.Term,
+		MsgType: pb.MessageType_MsgHeartbeat,
+		Term:    r.Term,
 		Commit:  commit,
 	}
 
@@ -348,6 +348,13 @@ func (r *Raft) Step(m pb.Message) error {
 		return nil
 	}
 
+	switch m.MsgType {
+	case pb.MessageType_MsgRequestVote:
+		if r.handleMsgRequestVote(m) {
+			r.electionElapsed = 0
+		}
+	}
+
 	switch r.State {
 	case StateFollower:
 		switch m.MsgType {
@@ -355,8 +362,6 @@ func (r *Raft) Step(m pb.Message) error {
 			r.electionElapsed = 0
 			r.handleMsgHup(m)
 		case pb.MessageType_MsgRequestVote:
-			r.electionElapsed = 0
-			r.handleMsgRequestVote(m)
 		case pb.MessageType_MsgAppend:
 			r.electionElapsed = 0
 			r.Lead = m.GetFrom()
@@ -365,7 +370,6 @@ func (r *Raft) Step(m pb.Message) error {
 			r.electionElapsed = 0
 			r.Lead = m.GetFrom()
 			r.handleHeartbeat(m)
-
 		}
 
 	case StateCandidate:
@@ -421,7 +425,7 @@ func (r *Raft) handleMsgHup(m pb.Message) {
 	}
 }
 
-func (r *Raft) handleMsgRequestVote(m pb.Message) {
+func (r *Raft) handleMsgRequestVote(m pb.Message) bool {
 	// 1. r.Vote 还未投票
 	// 2. m.Term > r.Term
 	// 3. log 足够新
@@ -431,17 +435,20 @@ func (r *Raft) handleMsgRequestVote(m pb.Message) {
 	if canVote && r.RaftLog.isUpToDate(m.GetIndex(), m.GetLogTerm()) {
 		r.Vote = m.GetFrom()
 		r.send(pb.Message{From: r.id, To: m.GetFrom(), Term: r.Term, MsgType: pb.MessageType_MsgRequestVoteResponse, Reject: false})
-	} else {
-		r.send(pb.Message{From: r.id, To: m.GetFrom(), Term: r.Term, MsgType: pb.MessageType_MsgRequestVoteResponse, Reject: true})
+		return true
 	}
+	r.send(pb.Message{From: r.id, To: m.GetFrom(), Term: r.Term, MsgType: pb.MessageType_MsgRequestVoteResponse, Reject: true})
+	return false
 }
 
 type VoteType int
+
 const (
-	VoteWin VoteType = 1
-	VoteLost VoteType = 2
+	VoteWin     VoteType = 1
+	VoteLost    VoteType = 2
 	VotePending VoteType = 3
 )
+
 func (r *Raft) pollQuorum(m pb.Message) VoteType {
 	// 1.计算是否满足 quorum ; 三种状态 1、win  2、lost  3、pending
 	r.votes[m.GetFrom()] = !m.GetReject()
@@ -464,7 +471,7 @@ func (r *Raft) pollQuorum(m pb.Message) VoteType {
 	if voteInfo[1] >= q {
 		return VoteWin
 	}
-	if voteInfo[1] + missing >= q {
+	if voteInfo[1]+missing >= q {
 		return VotePending
 	}
 	return VoteLost
