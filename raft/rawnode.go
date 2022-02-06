@@ -80,6 +80,7 @@ func NewRawNode(config *Config) (*RawNode, error) {
 	r := newRaft(config)
 	node.prevSoftState = r.softState()
 	node.prevHardState = r.hardState()
+	node.Raft = r
 	return node, nil
 }
 
@@ -148,7 +149,22 @@ func (rn *RawNode) Step(m pb.Message) error {
 // Ready returns the current point-in-time state of this RawNode.
 func (rn *RawNode) Ready() Ready {
 	// Your Code Here (2A).
-	return Ready{}
+	res := Ready{
+		Entries: rn.Raft.RaftLog.unstableEntries(),
+		CommittedEntries: rn.Raft.RaftLog.nextEnts(),
+		Messages: rn.Raft.msgs,
+	}
+	if st := rn.Raft.softState(); !isSoftStateEqual(st, rn.prevSoftState) {
+		res.SoftState = st
+	}
+	if ht := rn.Raft.hardState(); !isHardStateEqual(ht, rn.prevHardState) {
+		res.HardState = ht
+	}
+	if res.SoftState != nil {
+		rn.prevSoftState = res.SoftState
+	}
+	rn.Raft.msgs = nil
+	return res
 }
 
 // HasReady called when RawNode user need to check if any Ready pending.
@@ -158,14 +174,43 @@ func (rn *RawNode) HasReady() bool {
 	if !isSoftStateEqual(r.softState(), rn.prevSoftState) {
 		return true
 	}
+	hardState := r.hardState()
+	if !IsEmptyHardState(hardState) && !isHardStateEqual(hardState, rn.prevHardState) {
+		return true
+	}
+	if len(r.msgs) > 0 || len(r.RaftLog.unstableEntries()) > 0 {
+		return true
+	}
 	return false
 }
 
 // Advance notifies the RawNode that the application has applied and saved progress in the
 // last Ready results.
 func (rn *RawNode) Advance(rd Ready) {
-	// Your Code Here (2A).
-
+	if !IsEmptyHardState(rd.HardState) {
+		rn.prevHardState = rd.HardState
+	}
+	rlog := rn.Raft.RaftLog
+	// 更新 applied、 entries 信息
+	if n := len(rd.CommittedEntries); n > 0 {
+		rlog.applied = rd.CommittedEntries[n - 1].GetIndex()
+	}
+	// 已经 stable 故可以丢弃无用的 entries, 更新 stabled
+	if len(rd.Entries) > 0 {
+		last := rd.Entries[len(rd.Entries) - 1]
+		term, err := rlog.Term(last.GetIndex())
+		if err != nil {
+			return
+		}
+		if term == last.Term && last.Index >= rlog.offset {
+			rlog.entries = rlog.entries[last.Index + 1 - rlog.offset:]
+			rlog.offset = last.Index + 1
+			rlog.stabled = last.Index
+			if len(rlog.entries) == 0 {
+				rlog.entries = nil
+			}
+		}
+	}
 }
 
 // GetProgress return the Progress of this node and its peers, if this
