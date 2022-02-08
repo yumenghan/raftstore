@@ -114,6 +114,23 @@ func (d *peerMsgHandler) proposeRaftCommand(msg *raft_cmdpb.RaftCmdRequest, cb *
 		return
 	}
 	// Your Code Here (2B).
+	adminRequest := msg.GetAdminRequest()
+	if adminRequest != nil {
+		//handle admin
+		switch adminRequest.GetCmdType() {
+		case raft_cmdpb.AdminCmdType_ChangePeer:
+		case raft_cmdpb.AdminCmdType_Split:
+		case raft_cmdpb.AdminCmdType_TransferLeader:
+		default:
+			log.Errorf("invalid adminRequest cmdtype [%v]", adminRequest.GetCmdType())
+		}
+		return
+	}
+
+	for _, req := range msg.GetRequests() {
+
+	}
+
 }
 
 func (d *peerMsgHandler) onTick() {

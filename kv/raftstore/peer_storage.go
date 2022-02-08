@@ -308,6 +308,11 @@ func ClearMeta(engines *engine_util.Engines, kvWB, raftWB *engine_util.WriteBatc
 // never be committed
 func (ps *PeerStorage) Append(entries []eraftpb.Entry, raftWB *engine_util.WriteBatch) error {
 	// Your Code Here (2B).
+	// todo 简单将所有 unstable entries 写入存储，删除那些永远不会提交的 entries
+	for _, entry := range entries {
+		key := meta.RaftLogKey(ps.region.Id, entry.GetIndex())
+		raftWB.SetMeta(key, &entry)
+	}
 	return nil
 }
 
@@ -331,7 +336,53 @@ func (ps *PeerStorage) ApplySnapshot(snapshot *eraftpb.Snapshot, kvWB *engine_ut
 func (ps *PeerStorage) SaveReadyState(ready *raft.Ready) (*ApplySnapResult, error) {
 	// Hint: you may call `Append()` and `ApplySnapshot()` in this function
 	// Your Code Here (2B/2C).
-	return nil, nil
+	// 1.raftLocalState: hardState、 log
+	// 2.raftApplyState: applies info
+	// 3.RegionLocalState： normal or tombstone
+	raftWB := &engine_util.WriteBatch{}
+	kvWB := &engine_util.WriteBatch{}
+
+	// 1.raft log
+	ps.Append(ready.Entries, raftWB)
+
+	// 2.hard state
+	if !raft.IsEmptyHardState(ready.HardState) {
+		ps.raftState.HardState = &eraftpb.HardState{
+			Vote: ready.HardState.Vote,
+			Term: ready.HardState.Term,
+			Commit: ready.HardState.Commit,
+		}
+	}
+
+	// 3.lastIndex lastTerm
+	if len(ready.Entries) > 0 {
+		last := ready.Entries[len(ready.Entries) - 1]
+		if last.Index > ps.raftState.LastIndex {
+			ps.raftState.LastIndex = last.Index
+			ps.raftState.LastTerm = last.Term
+		} else {
+			panic(fmt.Sprintf("ps-[%v] last raftState index [%d] Term [%d] > ready index [%d] Term [%d] ", ps.Tag, ps.raftState.LastIndex, ps.raftState.LastTerm, last.Index, last.Term))
+		}
+	}
+
+	// 4.applyIndex
+	if len(ready.CommittedEntries) > 0 {
+		last := ready.CommittedEntries[len(ready.CommittedEntries) - 1]
+		ps.applyState.AppliedIndex = last.Index
+	}
+
+	// 5.snapshot
+	snapshot, err := ps.ApplySnapshot(&ready.Snapshot, kvWB, raftWB)
+	if err != nil {
+		panic(fmt.Sprintf("ps-[%v] ApplySnapshot err: %v", ps.Tag, err))
+	}
+
+	raftWB.SetMeta(meta.RaftStateKey(ps.region.Id), ps.raftState)
+	kvWB.SetMeta(meta.ApplyStateKey(ps.region.Id), ps.applyState)
+
+	raftWB.WriteToDB(ps.Engines.Raft)
+	kvWB.WriteToDB(ps.Engines.Kv)
+	return snapshot, nil
 }
 
 func (ps *PeerStorage) ClearData() {
