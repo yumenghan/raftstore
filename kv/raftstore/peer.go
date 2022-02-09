@@ -390,3 +390,18 @@ func (p *peer) sendRaftMessage(msg eraftpb.Message, trans Transport) error {
 	sendMsg.Message = &msg
 	return trans.Send(sendMsg)
 }
+
+func (p *peer) appendProposal(prop *proposal) {
+	p.proposals = append(p.proposals, prop)
+}
+
+func (p *peer) popProposal(index uint64, term uint64) *proposal {
+	for i, proposal := range p.proposals {
+		if proposal.index == index && proposal.term == term {
+			p.proposals[i] = p.proposals[len(p.proposals) - 1]
+			p.proposals = p.proposals[:len(p.proposals) - 1]
+			return proposal
+		}
+	}
+	return nil
+}

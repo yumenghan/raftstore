@@ -2,6 +2,8 @@ package raftstore
 
 import (
 	"fmt"
+	"github.com/pingcap-incubator/tinykv/proto/pkg/eraftpb"
+	"github.com/pingcap-incubator/tinykv/raft"
 	"time"
 
 	"github.com/Connor1996/badger/y"
@@ -43,6 +45,23 @@ func (d *peerMsgHandler) HandleRaftReady() {
 		return
 	}
 	// Your Code Here (2B).
+	if !d.RaftGroup.HasReady() {
+		return
+	}
+
+	ready := d.RaftGroup.Ready()
+
+	_, err := d.peerStorage.SaveReadyState(&ready)
+	if err != nil {
+		log.Errorf("[%v] peer SaveReadyState err:%v", d.Tag, err)
+		return
+	}
+
+	d.process(ready.CommittedEntries)
+
+	d.sendRaftMsg(&ready)
+
+	d.RaftGroup.Advance(ready)
 }
 
 func (d *peerMsgHandler) HandleMsg(msg message.Msg) {
@@ -119,16 +138,37 @@ func (d *peerMsgHandler) proposeRaftCommand(msg *raft_cmdpb.RaftCmdRequest, cb *
 		//handle admin
 		switch adminRequest.GetCmdType() {
 		case raft_cmdpb.AdminCmdType_ChangePeer:
-		case raft_cmdpb.AdminCmdType_Split:
 		case raft_cmdpb.AdminCmdType_TransferLeader:
 		default:
-			log.Errorf("invalid adminRequest cmdtype [%v]", adminRequest.GetCmdType())
+			log.Errorf("[%v]peer invalid adminRequest cmdtype [%v]", d.Tag, adminRequest.GetCmdType())
 		}
 		return
 	}
 
-	for _, req := range msg.GetRequests() {
+	requestWrapper := NewRaftCmdRequestWrapper(msg)
+	term := requestWrapper.GetMsg().GetHeader().GetTerm()
+	index := requestWrapper.GetID()
 
+	// cb record
+	d.peer.appendProposal(&proposal{
+		term: term,
+		index: index,
+		cb: cb,
+	})
+
+	reqBytes, err := requestWrapper.Marshal()
+	if err != nil {
+		log.Errorf("[%v] peer requestWrapper marshal err:%v", d.Tag, err)
+		d.peer.popProposal(index, term)
+		cb.Done(ErrResp(err))
+		return
+	}
+
+	if err := d.RaftGroup.Propose(reqBytes); err != nil {
+		log.Errorf("[%v] peer propose request err:%v", d.Tag, err)
+		d.peer.popProposal(index, term)
+		cb.Done(ErrResp(err))
+		return
 	}
 
 }
@@ -285,6 +325,19 @@ func (d *peerMsgHandler) checkMessage(msg *rspb.RaftMessage) bool {
 		return true
 	}
 	return false
+}
+
+func (d *peerMsgHandler) sendRaftMsg(rd *raft.Ready) {
+	for _, msg := range rd.Messages {
+		err := d.sendRaftMessage(msg, d.ctx.trans)
+		if msg.GetMsgType() != eraftpb.MessageType_MsgHeartbeat {
+			if err != nil {
+				log.Warnf("%s '%d->%d' msg(%v) error:%v", d.Tag, msg.GetFrom(), msg.GetTo(), msg.GetMsgType(), err)
+			} else {
+				log.Debugf("%s '%d->%d' msg(%v)", d.Tag, msg.GetFrom(), msg.GetTo(), msg.GetMsgType())
+			}
+		}
+	}
 }
 
 func handleStaleMsg(trans Transport, msg *rspb.RaftMessage, curEpoch *metapb.RegionEpoch,
