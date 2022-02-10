@@ -274,16 +274,24 @@ func (l *RaftLog) truncateAndAppend(entries []*pb.Entry) {
 }
 
 func (l *RaftLog) startAt(i uint64) ([]*pb.Entry, error) {
-	if i < l.offset {
-		// 可能返回 storage 中的 entries
-		return nil, ErrCompacted
-	}
 	if i > l.LastIndex() {
 		return nil, nil
 	}
-	if i-l.offset > uint64(len(l.entries)) {
+	if i > uint64(len(l.entries))+l.offset {
 		return nil, ErrUnavailable
 	}
+
+	if i < l.offset {
+		// 可能返回 storage 中的 entries
+		entries, err := l.storage.Entries(i, l.offset)
+		if err == ErrCompacted {
+			return nil, err
+		}
+		ents := l.copyEntries(entries)
+		ents = append(ents, l.copyEntries(l.entries[:])...)
+		return ents, nil
+	}
+
 	return l.copyEntries(l.entries[i-l.offset:]), nil
 }
 

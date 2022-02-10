@@ -17,6 +17,7 @@ package raft
 import (
 	"errors"
 	"github.com/gogo/protobuf/sortkeys"
+	"github.com/pingcap-incubator/tinykv/log"
 	"math/rand"
 
 	pb "github.com/pingcap-incubator/tinykv/proto/pkg/eraftpb"
@@ -176,7 +177,7 @@ func newRaft(c *Config) *Raft {
 		heartbeatTimeout: c.HeartbeatTick,
 	}
 	// confState
-	hardState, _, err := c.Storage.InitialState()
+	hardState, confState, err := c.Storage.InitialState()
 	if err != nil {
 		panic(err.Error())
 	}
@@ -190,10 +191,17 @@ func newRaft(c *Config) *Raft {
 	}
 
 	r.Prs = make(map[uint64]*Progress)
-	for _, p := range c.peers {
+
+	var nodes []uint64
+	if nodes = confState.GetNodes(); len(nodes) == 0 {
+		nodes = c.peers
+	}
+	for _, p := range nodes {
 		r.Prs[p] = &Progress{}
 	}
 
+	r.becomeFollower(r.Term, None)
+	log.Debugf("newRaft [%d] peers:[%v] term [%d] commit [%d] applied [%d] lastIndex: [%d]", r.id, c.peers, r.Term, r.RaftLog.committed, r.RaftLog.applied, r.RaftLog.LastIndex())
 	return r
 }
 
@@ -224,7 +232,7 @@ func (r *Raft) sendAppend(to uint64) bool {
 	ents, erre := r.RaftLog.startAt(pr.Next)
 
 	if errt != nil || erre != nil {
-
+		log.Errorf("sendAppend id [%d] pr.Match [%d] pr.Next[%d] log.offset [%d] lastIndex: [%d] errt:%v, erre:%v", to, pr.Next-1, pr.Next, r.RaftLog.offset, r.RaftLog.LastIndex(), errt, erre)
 		return false
 	} else {
 		m.LogTerm = term
@@ -498,7 +506,8 @@ func (r *Raft) handleAppendEntries(m pb.Message) {
 	}
 
 	if lastNewIndex, ok := r.RaftLog.maybeAppend(m.GetIndex(), m.GetLogTerm(), m.GetCommit(), m.GetEntries()); ok {
-		r.send(pb.Message{From: r.id, To: m.GetFrom(), Term: r.Term, MsgType: pb.MessageType_MsgAppendResponse, Index: lastNewIndex})
+		term, _ := r.RaftLog.Term(lastNewIndex)
+		r.send(pb.Message{From: r.id, To: m.GetFrom(), Term: r.Term, MsgType: pb.MessageType_MsgAppendResponse, LogTerm: term, Index: lastNewIndex})
 		return
 	}
 

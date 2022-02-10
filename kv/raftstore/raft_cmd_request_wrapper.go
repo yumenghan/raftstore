@@ -7,19 +7,19 @@ import (
 )
 
 type RaftCmdRequestWrapper struct {
-	id uint64
+	id  uint64
 	msg *raft_cmdpb.RaftCmdRequest
 }
 
-func NewRaftCmdRequestWrapper(msg *raft_cmdpb.RaftCmdRequest) RaftCmdRequestWrapper {
-	return RaftCmdRequestWrapper{
+func NewRaftCmdRequestWrapper(msg *raft_cmdpb.RaftCmdRequest) *RaftCmdRequestWrapper {
+	return &RaftCmdRequestWrapper{
 		msg: msg,
-		id: nextGenID(),
+		id:  nextGenID(),
 	}
 }
 
-func (r RaftCmdRequestWrapper) Marshal() ([]byte, error) {
-	buf := make([]byte, r.msg.Size() + 8)
+func (r *RaftCmdRequestWrapper) Marshal() ([]byte, error) {
+	buf := make([]byte, r.msg.Size()+8)
 	binary.BigEndian.PutUint64(buf[:8], r.id)
 	if _, err := r.msg.MarshalTo(buf[8:]); err != nil {
 		return nil, fmt.Errorf("msg marshal fail:%v", err)
@@ -27,7 +27,7 @@ func (r RaftCmdRequestWrapper) Marshal() ([]byte, error) {
 	return buf, nil
 }
 
-func (r RaftCmdRequestWrapper) Unmarshal(buf []byte) error {
+func (r *RaftCmdRequestWrapper) Unmarshal(buf []byte) error {
 	var msg raft_cmdpb.RaftCmdRequest
 	if err := msg.Unmarshal(buf[8:]); err != nil {
 		return fmt.Errorf("msg unmarshal err:%v", err)

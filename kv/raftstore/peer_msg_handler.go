@@ -149,11 +149,12 @@ func (d *peerMsgHandler) proposeRaftCommand(msg *raft_cmdpb.RaftCmdRequest, cb *
 	term := requestWrapper.GetMsg().GetHeader().GetTerm()
 	index := requestWrapper.GetID()
 
+	log.Debugf("[%v] peer proposeRaftCommand index:%d msg:%s", d.Tag, index, msg.String())
 	// cb record
 	d.peer.appendProposal(&proposal{
-		term: term,
+		term:  term,
 		index: index,
-		cb: cb,
+		cb:    cb,
 	})
 
 	reqBytes, err := requestWrapper.Marshal()
@@ -332,9 +333,7 @@ func (d *peerMsgHandler) sendRaftMsg(rd *raft.Ready) {
 		err := d.sendRaftMessage(msg, d.ctx.trans)
 		if msg.GetMsgType() != eraftpb.MessageType_MsgHeartbeat {
 			if err != nil {
-				log.Warnf("%s '%d->%d' msg(%v) error:%v", d.Tag, msg.GetFrom(), msg.GetTo(), msg.GetMsgType(), err)
-			} else {
-				log.Debugf("%s '%d->%d' msg(%v)", d.Tag, msg.GetFrom(), msg.GetTo(), msg.GetMsgType())
+				//				log.Warnf("%s '%d->%d' msg(%v) error:%v", d.Tag, msg.GetFrom(), msg.GetTo(), msg.GetMsgType(), err)
 			}
 		}
 	}

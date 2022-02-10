@@ -28,12 +28,12 @@ func (d *peerMsgHandler) processNormal(entry eraftpb.Entry) {
 	if len(entry.GetData()) <= 0 {
 		return
 	}
-	var req RaftCmdRequestWrapper
+	req := &RaftCmdRequestWrapper{}
 	if err := req.Unmarshal(entry.GetData()); err != nil {
 		log.Errorf("[%v] peer processNormal unmarshal requestWrapper err:%v", d.Tag, err)
 		return
 	}
-
+	log.Debugf("[%v] peer processNormal entry data len:%d index:%d msg:%s", d.Tag, len(entry.GetData()), req.GetID(), req.GetMsg().String())
 	if isAdminRequest(req.GetMsg()) {
 		//todo handle adminRequest
 		return
@@ -42,7 +42,7 @@ func (d *peerMsgHandler) processNormal(entry eraftpb.Entry) {
 	d.applyCmd(req)
 }
 
-func (d *peerMsgHandler) applyCmd(req RaftCmdRequestWrapper) {
+func (d *peerMsgHandler) applyCmd(req *RaftCmdRequestWrapper) {
 	prop := d.popProposal(req.GetID(), req.GetMsg().GetHeader().GetTerm())
 	var cb *message.Callback
 	if prop != nil {
@@ -53,6 +53,7 @@ func (d *peerMsgHandler) applyCmd(req RaftCmdRequestWrapper) {
 	resp := make([]*raft_cmdpb.Response, len(req.GetMsg().GetRequests()))
 	for i, r := range req.GetMsg().GetRequests() {
 		resp[i] = &raft_cmdpb.Response{}
+		resp[i].CmdType = r.GetCmdType()
 		switch r.CmdType {
 		case raft_cmdpb.CmdType_Get:
 			getRequest := r.GetGet()
