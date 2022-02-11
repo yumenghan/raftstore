@@ -360,11 +360,11 @@ func (ps *PeerStorage) SaveReadyState(ready *raft.Ready) (*ApplySnapResult, erro
 	// 3.lastIndex lastTerm
 	if len(ready.Entries) > 0 {
 		last := ready.Entries[len(ready.Entries) - 1]
-		if last.Index > ps.raftState.LastIndex {
-			ps.raftState.LastIndex = last.Index
-			ps.raftState.LastTerm = last.Term
+		ps.raftState.LastIndex = last.Index
+		ps.raftState.LastTerm = last.Term
+		if last.Index >= ps.raftState.LastIndex {
 		} else {
-			panic(fmt.Sprintf("ps-[%v] last raftState index [%d] Term [%d] > ready index [%d] Term [%d] ", ps.Tag, ps.raftState.LastIndex, ps.raftState.LastTerm, last.Index, last.Term))
+			log.Warnf("ps-[%v] last raftState index [%d] Term [%d] > ready index [%d] Term [%d] ", ps.Tag, ps.raftState.LastIndex, ps.raftState.LastTerm, last.Index, last.Term)
 		}
 	}
 

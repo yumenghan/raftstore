@@ -220,8 +220,8 @@ func (d *peerMsgHandler) ScheduleCompactLog(truncatedIndex uint64) {
 }
 
 func (d *peerMsgHandler) onRaftMsg(msg *rspb.RaftMessage) error {
-	log.Debugf("%s handle raft message %s from %d to %d",
-		d.Tag, msg.GetMessage().GetMsgType(), msg.GetFromPeer().GetId(), msg.GetToPeer().GetId())
+//	log.Debugf("%s handle raft message %s from %d to %d",
+//		d.Tag, msg.GetMessage().GetMsgType(), msg.GetFromPeer().GetId(), msg.GetToPeer().GetId())
 	if !d.validateRaftMessage(msg) {
 		return nil
 	}
@@ -333,7 +333,7 @@ func (d *peerMsgHandler) sendRaftMsg(rd *raft.Ready) {
 		err := d.sendRaftMessage(msg, d.ctx.trans)
 		if msg.GetMsgType() != eraftpb.MessageType_MsgHeartbeat {
 			if err != nil {
-				//				log.Warnf("%s '%d->%d' msg(%v) error:%v", d.Tag, msg.GetFrom(), msg.GetTo(), msg.GetMsgType(), err)
+				log.Warnf("%s '%d->%d' msg(%v) logTerm(%d) Index(%d) lenEntry(%d)", d.Tag, msg.GetFrom(), msg.GetTo(), msg.GetMsgType(), msg.GetLogTerm(), msg.GetIndex(), len(msg.Entries))
 			}
 		}
 	}
