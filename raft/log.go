@@ -15,6 +15,7 @@
 package raft
 
 import (
+	"fmt"
 	pb "github.com/pingcap-incubator/tinykv/proto/pkg/eraftpb"
 )
 
@@ -156,6 +157,9 @@ func (l *RaftLog) LastIndex() uint64 {
 	if length != 0 {
 		return l.offset + uint64(length) - 1
 	}
+	if l.pendingSnapshot != nil {
+		return l.pendingSnapshot.GetMetadata().GetIndex()
+	}
 	// 查 storage
 	i, err := l.storage.LastIndex()
 	if err != nil {
@@ -168,6 +172,11 @@ func (l *RaftLog) LastIndex() uint64 {
 func (l *RaftLog) Term(i uint64) (uint64, error) {
 	// 1.先查 unstable
 	last := l.LastIndex()
+	if i < l.offset {
+		if l.pendingSnapshot != nil && l.pendingSnapshot.GetMetadata().GetIndex() == i {
+			return l.pendingSnapshot.GetMetadata().GetTerm(), nil
+		}
+	}
 	if i <= last && i >= l.offset && len(l.entries) > 0{
 		return l.entries[i-l.offset].Term, nil
 	}
@@ -322,4 +331,12 @@ func (l *RaftLog) findConflictByTerm(index uint64, term uint64) uint64 {
 		index--
 	}
 	return index
+}
+
+func (l *RaftLog) hasPendingSnapshot() bool {
+	return l.pendingSnapshot != nil
+}
+
+func (l *RaftLog) String() string {
+	return fmt.Sprintf("applied:[%d] committed:[%d] stable:[%d] offset:[%d] entries:[%d]", l.applied, l.committed, l.stabled, l.offset, len(l.entries))
 }

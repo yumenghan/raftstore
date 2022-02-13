@@ -391,6 +391,10 @@ func (r *Raft) Step(m pb.Message) error {
 			r.electionElapsed = 0
 			r.Lead = m.GetFrom()
 			r.handleHeartbeat(m)
+		case pb.MessageType_MsgSnapshot:
+			r.electionElapsed = 0
+			r.Lead = m.GetFrom()
+			r.handleSnapshot(m)
 		}
 
 	case StateCandidate:
@@ -409,6 +413,9 @@ func (r *Raft) Step(m pb.Message) error {
 		case pb.MessageType_MsgAppend:
 			r.becomeFollower(m.GetTerm(), m.GetFrom())
 			r.handleAppendEntries(m)
+		case pb.MessageType_MsgSnapshot:
+			r.becomeFollower(m.GetTerm(), m.GetFrom())
+			r.handleSnapshot(m)
 		}
 	case StateLeader:
 		switch m.MsgType {
@@ -650,7 +657,41 @@ func (r *Raft) appendEntry(entries []*pb.Entry) {
 
 // handleSnapshot handle Snapshot RPC request
 func (r *Raft) handleSnapshot(m pb.Message) {
-	// Your Code Here (2C).
+	// 更新 raft state、 raft log 信息
+	snapshot := m.GetSnapshot()
+	if snapshot == nil {
+		return
+	}
+	metaInfo := snapshot.GetMetadata()
+	if metaInfo == nil {
+		return
+	}
+	if metaInfo.GetIndex() <= r.RaftLog.committed {
+		return
+	}
+
+	log.Infof("raft-%d handleSnapshot %+v", r.id, metaInfo)
+	//
+	if !r.RaftLog.hasPendingSnapshot() &&  r.RaftLog.pendingSnapshot.GetMetadata().GetIndex() > metaInfo.GetIndex() {
+		log.Warnf("raft-%d was installing snapshot index:%d term:%d", r.id, r.RaftLog.pendingSnapshot.GetMetadata().GetIndex(), r.RaftLog.pendingSnapshot.GetMetadata().GetTerm())
+		return
+	}
+
+	r.RaftLog.pendingSnapshot = snapshot
+	rlog := r.RaftLog
+	rlog.entries = nil
+	rlog.offset = metaInfo.GetIndex() + 1
+	rlog.applied = metaInfo.GetIndex()
+	rlog.committed = rlog.applied
+	rlog.stabled = rlog.applied
+	state := metaInfo.GetConfState()
+	r.Prs = make(map[uint64]*Progress)
+	for _, node := range state.GetNodes() {
+		r.Prs[node] = &Progress{}
+	}
+	r.becomeFollower(m.GetTerm(), m.GetFrom())
+
+	log.Infof("raft-%d handleSnapshot finish raftLog:%s", r.id, rlog.String())
 }
 
 // addNode add a new node to raft group

@@ -2,6 +2,7 @@ package raftstore
 
 import (
 	"github.com/pingcap-incubator/tinykv/kv/raftstore/message"
+	"github.com/pingcap-incubator/tinykv/kv/raftstore/meta"
 	"github.com/pingcap-incubator/tinykv/kv/raftstore/util"
 	"github.com/pingcap-incubator/tinykv/kv/util/engine_util"
 	"github.com/pingcap-incubator/tinykv/log"
@@ -14,6 +15,7 @@ func (d *peerMsgHandler) process(entries []eraftpb.Entry) {
 		switch entry.GetEntryType() {
 		case eraftpb.EntryType_EntryConfChange:
 			d.processConfChange(entry)
+
 		default:
 			d.processNormal(entry)
 		}
@@ -36,6 +38,10 @@ func (d *peerMsgHandler) processNormal(entry eraftpb.Entry) {
 	log.Debugf("[%v] peer processNormal entry data len:%d index:%d msg:%s", d.Tag, len(entry.GetData()), req.GetID(), req.GetMsg().String())
 	if isAdminRequest(req.GetMsg()) {
 		//todo handle adminRequest
+		switch req.GetMsg().GetAdminRequest().GetCmdType() {
+		case raft_cmdpb.AdminCmdType_CompactLog:
+			d.handleCompactLog(req.GetMsg())
+		}
 		return
 	}
 
@@ -102,6 +108,40 @@ func (d *peerMsgHandler) applyCmd(req *RaftCmdRequestWrapper) {
 	cmdResp.Header.CurrentTerm = req.GetMsg().GetHeader().GetTerm()
 	cmdResp.Responses = append(cmdResp.Responses, resp...)
 	cb.Done(cmdResp)
+}
+
+func (d *peerMsgHandler) handleCompactLog(msg *raft_cmdpb.RaftCmdRequest) {
+	compactTerm := msg.GetAdminRequest().GetCompactLog().GetCompactTerm()
+	compactIndex := msg.GetAdminRequest().GetCompactLog().GetCompactIndex()
+
+	if !d.validateCompactLog(compactTerm, compactIndex) {
+		log.Infof("peer-[%s] handleCompactLog validate can compact fail (compactTerm:%d compactIndex:%d)", compactTerm, compactIndex)
+		return
+	}
+
+	wb := &engine_util.WriteBatch{}
+	d.peerStorage.applyState.TruncatedState.Index = compactIndex
+	d.peerStorage.applyState.TruncatedState.Term = compactTerm
+	wb.SetMeta(meta.ApplyStateKey(d.regionId), d.peerStorage.applyState)
+
+	wb.WriteToDB(d.ctx.engine.Kv)
+	// 异步删除
+	d.ScheduleCompactLog(compactIndex)
+}
+
+func (d *peerMsgHandler) validateCompactLog(compactTerm, compactIndex uint64) bool {
+	lastIndex := d.RaftGroup.Raft.RaftLog.LastIndex()
+	if compactIndex > lastIndex {
+		return false
+	}
+	term, err := d.RaftGroup.Raft.RaftLog.Term(compactIndex)
+	if err != nil {
+		return false
+	}
+	if term != compactTerm {
+		return false
+	}
+	return true
 }
 
 func (d *peerMsgHandler) checkKeyInRegion(key []byte, cb *message.Callback) bool {

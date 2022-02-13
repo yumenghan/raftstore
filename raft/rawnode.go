@@ -155,6 +155,9 @@ func (rn *RawNode) Ready() Ready {
 		CommittedEntries: rn.Raft.RaftLog.nextEnts(),
 		Messages: rn.Raft.msgs,
 	}
+	if !rn.Raft.RaftLog.hasPendingSnapshot() {
+		res.Snapshot = *rn.Raft.RaftLog.pendingSnapshot
+	}
 	if st := rn.Raft.softState(); !isSoftStateEqual(st, rn.prevSoftState) {
 		res.SoftState = st
 	}
@@ -172,6 +175,9 @@ func (rn *RawNode) Ready() Ready {
 func (rn *RawNode) HasReady() bool {
 	// Your Code Here (2A).
 	r := rn.Raft
+	if !rn.Raft.RaftLog.hasPendingSnapshot() {
+		return true
+	}
 	if !isSoftStateEqual(r.softState(), rn.prevSoftState) {
 		return true
 	}
@@ -213,6 +219,7 @@ func (rn *RawNode) Advance(rd Ready) {
 			}
 		}
 	}
+	rn.Raft.RaftLog.pendingSnapshot = nil
 }
 
 // GetProgress return the Progress of this node and its peers, if this
