@@ -309,9 +309,9 @@ func ClearMeta(engines *engine_util.Engines, kvWB, raftWB *engine_util.WriteBatc
 func (ps *PeerStorage) Append(entries []eraftpb.Entry, raftWB *engine_util.WriteBatch) error {
 	// Your Code Here (2B).
 	// todo 简单将所有 unstable entries 写入存储，删除那些永远不会提交的 entries
-	for _, entry := range entries {
-		key := meta.RaftLogKey(ps.region.Id, entry.GetIndex())
-		raftWB.SetMeta(key, &entry)
+	for i := range entries {
+		key := meta.RaftLogKey(ps.region.Id, entries[i].GetIndex())
+		raftWB.SetMeta(key, &entries[i])
 	}
 	return nil
 }
@@ -360,9 +360,9 @@ func (ps *PeerStorage) SaveReadyState(ready *raft.Ready) (*ApplySnapResult, erro
 	// 3.lastIndex lastTerm
 	if len(ready.Entries) > 0 {
 		last := ready.Entries[len(ready.Entries) - 1]
-		ps.raftState.LastIndex = last.Index
-		ps.raftState.LastTerm = last.Term
 		if last.Index >= ps.raftState.LastIndex {
+			ps.raftState.LastIndex = last.Index
+			ps.raftState.LastTerm = last.Term
 		} else {
 			log.Warnf("ps-[%v] last raftState index [%d] Term [%d] > ready index [%d] Term [%d] ", ps.Tag, ps.raftState.LastIndex, ps.raftState.LastTerm, last.Index, last.Term)
 		}
