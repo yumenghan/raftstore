@@ -16,6 +16,7 @@ package raft
 
 import (
 	"errors"
+	"github.com/pingcap-incubator/tinykv/log"
 
 	pb "github.com/pingcap-incubator/tinykv/proto/pkg/eraftpb"
 )
@@ -200,6 +201,7 @@ func (rn *RawNode) Advance(rd Ready) {
 		last := rd.Entries[len(rd.Entries) - 1]
 		term, err := rlog.Term(last.GetIndex())
 		if err != nil {
+			log.Errorf("%d-rownode advance get term err:%v", rn.Raft.id, err)
 			return
 		}
 		if term == last.Term && last.Index >= rlog.offset {

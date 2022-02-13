@@ -15,7 +15,6 @@
 package raft
 
 import (
-	"fmt"
 	pb "github.com/pingcap-incubator/tinykv/proto/pkg/eraftpb"
 )
 
@@ -112,15 +111,12 @@ func (l *RaftLog) unstableEntries() []pb.Entry {
 // nextEnts returns all the committed but not applied entries
 func (l *RaftLog) nextEnts() (ents []pb.Entry) {
 	// Your Code Here (2A).
-
-	if l.committed < l.applied {
+	if l.committed <= l.applied {
 		return nil
 	}
 	applied := l.applied + 1
 	committed := l.committed + 1
-	if l.checkOutRange(applied, committed) != nil {
-		return nil
-	}
+
 	var entries []pb.Entry
 	if applied < l.offset {
 		// 从 storage 中 find
@@ -129,7 +125,6 @@ func (l *RaftLog) nextEnts() (ents []pb.Entry) {
 			return nil
 		} else if err == ErrUnavailable {
 			panic("storage entries err:" + err.Error())
-			return nil
 		} else if err != nil {
 			panic(err)
 		}
@@ -154,18 +149,6 @@ func (l *RaftLog) FirstIndex() uint64 {
 	return index
 }
 
-func (l *RaftLog) checkOutRange(left, right uint64) error {
-	index := l.FirstIndex()
-	if left < index {
-		return ErrCompacted
-	}
-	length := l.LastIndex() + 1 - index
-	if right > length+index {
-		panic(fmt.Sprintf("out range left [%d] right [%d] length:[%d]", left, right, length))
-	}
-	return nil
-}
-
 // LastIndex return the last index of the log entries
 func (l *RaftLog) LastIndex() uint64 {
 	// 查 entries
@@ -185,7 +168,7 @@ func (l *RaftLog) LastIndex() uint64 {
 func (l *RaftLog) Term(i uint64) (uint64, error) {
 	// 1.先查 unstable
 	last := l.LastIndex()
-	if i <= last && i >= l.offset {
+	if i <= last && i >= l.offset && len(l.entries) > 0{
 		return l.entries[i-l.offset].Term, nil
 	}
 	// 2.查 storage
@@ -328,4 +311,15 @@ func (l *RaftLog) matchTerm(index, LogTerm uint64) bool {
 		return false
 	}
 	return term == LogTerm
+}
+
+func (l *RaftLog) findConflictByTerm(index uint64, term uint64) uint64 {
+	for {
+		logTerm, err := l.Term(index)
+		if logTerm <= term || err != nil {
+			break
+		}
+		index--
+	}
+	return index
 }

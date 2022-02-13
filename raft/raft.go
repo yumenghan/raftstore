@@ -16,6 +16,7 @@ package raft
 
 import (
 	"errors"
+	"fmt"
 	"github.com/gogo/protobuf/sortkeys"
 	"github.com/pingcap-incubator/tinykv/log"
 	"math/rand"
@@ -511,13 +512,14 @@ func (r *Raft) handleAppendEntries(m pb.Message) {
 		return
 	}
 
+	hintIndex := min(m.GetIndex(), r.RaftLog.LastIndex())
+	hintIndex = r.RaftLog.findConflictByTerm(hintIndex, m.GetLogTerm())
 	// 当前 index 对应的 logTerm 不 match
-	lastIndex := r.RaftLog.LastIndex()
-	term, err := r.RaftLog.Term(lastIndex)
+	term, err := r.RaftLog.Term(hintIndex)
 	if err != nil {
-		panic(err)
+		panic(fmt.Sprintf("raft-%d Index %d term valid err:%v", r.id, hintIndex, err))
 	}
-	r.send(pb.Message{To: m.GetFrom(), From: r.id, Term: r.Term, MsgType: pb.MessageType_MsgAppendResponse, Index: lastIndex, LogTerm: term, Reject: true})
+	r.send(pb.Message{To: m.GetFrom(), From: r.id, Term: r.Term, MsgType: pb.MessageType_MsgAppendResponse, Index: hintIndex, LogTerm: term, Reject: true})
 }
 
 func (r *Raft) handleMsgBeat(m pb.Message) {
@@ -547,10 +549,6 @@ func (r *Raft) handleMsgPropose(m pb.Message) {
 	if len(m.GetEntries()) == 0 {
 		panic("msg propose empty")
 	}
-	// 处理 conf change
-	//for i := range m.GetEntries() {
-	//
-	//}
 	r.appendEntry(m.GetEntries())
 	r.broadcastAppend()
 }
@@ -563,7 +561,14 @@ func (r *Raft) handleMsgAppendResponse(m pb.Message) {
 	}
 
 	if m.GetReject() {
-		progress.Match--
+
+		if m.GetLogTerm() > 0 {
+			index := r.RaftLog.findConflictByTerm(m.GetIndex(), m.GetLogTerm())
+			progress.Match = min(index, progress.Match)
+		} else {
+			progress.Match--
+		}
+
 		progress.Next = progress.Match + 1
 		r.sendAppend(m.GetFrom())
 		return
@@ -609,10 +614,10 @@ func (r *Raft) maybeCommit() bool {
 		cnt := counter[index] + prevCnt
 		prevCnt = cnt
 		// if majority
-		if cnt > len(r.Prs)/2 {
+		if cnt >= len(r.Prs)/2 + 1 {
 			term, err := r.RaftLog.Term(index)
 			if err != nil {
-				//log.Errorf("update leader commit get index [%d] err:%v", index, err)
+				log.Errorf("update leader commit get index [%d] err:%v", index, err)
 			}
 			if term == r.Term {
 				if index > r.RaftLog.committed {
