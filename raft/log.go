@@ -16,6 +16,7 @@ package raft
 
 import (
 	"fmt"
+	"github.com/pingcap-incubator/tinykv/log"
 	pb "github.com/pingcap-incubator/tinykv/proto/pkg/eraftpb"
 )
 
@@ -177,7 +178,7 @@ func (l *RaftLog) Term(i uint64) (uint64, error) {
 			return l.pendingSnapshot.GetMetadata().GetTerm(), nil
 		}
 	}
-	if i <= last && i >= l.offset && len(l.entries) > 0{
+	if i <= last && i >= l.offset && len(l.entries) > 0 {
 		return l.entries[i-l.offset].Term, nil
 	}
 	// 2.查 storage
@@ -255,7 +256,7 @@ func (l *RaftLog) truncateAndAppend(entries []*pb.Entry) {
 		l.entries = l.copyPointerEntries(entries)
 	default:
 		// truncate to after and copy to u.entries
-		//u.logger.Infof("truncate the unstable entries before index %d", after)
+		log.Infof("truncate the unstable entries before index %d", after)
 		l.entries = append([]pb.Entry{}, l.entries[:after-l.offset]...)
 		lastIndex := l.entries[len(l.entries)-1].GetIndex()
 		if l.stabled > lastIndex {
@@ -273,8 +274,16 @@ func (l *RaftLog) startAt(i uint64) ([]*pb.Entry, error) {
 		return nil, ErrUnavailable
 	}
 
+	if i < l.FirstIndex() {
+		return nil, ErrCompacted
+	}
+
 	if i < l.offset {
 		// 可能返回 storage 中的 entries
+		index, _ := l.storage.LastIndex()
+		if l.offset > index+1 {
+			return nil, ErrCompacted
+		}
 		entries, err := l.storage.Entries(i, l.offset)
 		if err == ErrCompacted {
 			return nil, err

@@ -151,11 +151,11 @@ func (rn *RawNode) Step(m pb.Message) error {
 func (rn *RawNode) Ready() Ready {
 	// Your Code Here (2A).
 	res := Ready{
-		Entries: rn.Raft.RaftLog.unstableEntries(),
+		Entries:          rn.Raft.RaftLog.unstableEntries(),
 		CommittedEntries: rn.Raft.RaftLog.nextEnts(),
-		Messages: rn.Raft.msgs,
+		Messages:         rn.Raft.msgs,
 	}
-	if !rn.Raft.RaftLog.hasPendingSnapshot() {
+	if rn.Raft.RaftLog.hasPendingSnapshot() {
 		res.Snapshot = *rn.Raft.RaftLog.pendingSnapshot
 	}
 	if st := rn.Raft.softState(); !isSoftStateEqual(st, rn.prevSoftState) {
@@ -175,7 +175,7 @@ func (rn *RawNode) Ready() Ready {
 func (rn *RawNode) HasReady() bool {
 	// Your Code Here (2A).
 	r := rn.Raft
-	if !rn.Raft.RaftLog.hasPendingSnapshot() {
+	if rn.Raft.RaftLog.hasPendingSnapshot() {
 		return true
 	}
 	if !isSoftStateEqual(r.softState(), rn.prevSoftState) {
@@ -200,18 +200,18 @@ func (rn *RawNode) Advance(rd Ready) {
 	rlog := rn.Raft.RaftLog
 	// 更新 applied、 entries 信息
 	if n := len(rd.CommittedEntries); n > 0 {
-		rlog.applied = rd.CommittedEntries[n - 1].GetIndex()
+		rlog.applied = rd.CommittedEntries[n-1].GetIndex()
 	}
 	// 已经 stable 故可以丢弃无用的 entries, 更新 stabled
 	if len(rd.Entries) > 0 {
-		last := rd.Entries[len(rd.Entries) - 1]
+		last := rd.Entries[len(rd.Entries)-1]
 		term, err := rlog.Term(last.GetIndex())
 		if err != nil {
 			log.Errorf("%d-rownode advance get term err:%v", rn.Raft.id, err)
 			return
 		}
 		if term == last.Term && last.Index >= rlog.offset {
-			rlog.entries = rlog.entries[last.Index + 1 - rlog.offset:]
+			rlog.entries = rlog.entries[last.Index+1-rlog.offset:]
 			rlog.offset = last.Index + 1
 			rlog.stabled = last.Index
 			if len(rlog.entries) == 0 {

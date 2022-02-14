@@ -233,15 +233,28 @@ func (r *Raft) sendAppend(to uint64) bool {
 	ents, erre := r.RaftLog.startAt(pr.Next)
 
 	if errt != nil || erre != nil {
-		log.Errorf("sendAppend id [%d] pr.Match [%d] pr.Next[%d] log.offset [%d] lastIndex: [%d] errt:%v, erre:%v", to, pr.Next-1, pr.Next, r.RaftLog.offset, r.RaftLog.LastIndex(), errt, erre)
-		return false
+		snapshot, err := r.RaftLog.storage.Snapshot()
+		if err != nil {
+			if err == ErrSnapshotTemporarilyUnavailable {
+				log.Debugf("%x failed to send snapshot to %x because snapshot is temporarily unavailable", r.id, to)
+				return false
+			}
+			panic(err)
+		}
+		m.MsgType = pb.MessageType_MsgSnapshot
+		m.Snapshot = &snapshot
+		pr.Match = snapshot.GetMetadata().GetIndex()
+		pr.Next = pr.Match + 1
+		log.Debugf("raft-%d sendAppend snapshot index:%d term:%d to id %d ", r.id, snapshot.GetMetadata().GetIndex(), snapshot.GetMetadata().GetTerm(), to)
+
 	} else {
 		m.LogTerm = term
 		m.Entries = ents
 		m.Commit = r.RaftLog.committed
 		m.Index = pr.Next - 1
-		r.send(m)
 	}
+
+	r.send(m)
 	return true
 }
 
@@ -621,7 +634,7 @@ func (r *Raft) maybeCommit() bool {
 		cnt := counter[index] + prevCnt
 		prevCnt = cnt
 		// if majority
-		if cnt >= len(r.Prs)/2 + 1 {
+		if cnt >= len(r.Prs)/2+1 {
 			term, err := r.RaftLog.Term(index)
 			if err != nil {
 				log.Errorf("update leader commit get index [%d] err:%v", index, err)
@@ -672,7 +685,7 @@ func (r *Raft) handleSnapshot(m pb.Message) {
 
 	log.Infof("raft-%d handleSnapshot %+v", r.id, metaInfo)
 	//
-	if !r.RaftLog.hasPendingSnapshot() &&  r.RaftLog.pendingSnapshot.GetMetadata().GetIndex() > metaInfo.GetIndex() {
+	if r.RaftLog.hasPendingSnapshot() && r.RaftLog.pendingSnapshot.GetMetadata().GetIndex() > metaInfo.GetIndex() {
 		log.Warnf("raft-%d was installing snapshot index:%d term:%d", r.id, r.RaftLog.pendingSnapshot.GetMetadata().GetIndex(), r.RaftLog.pendingSnapshot.GetMetadata().GetTerm())
 		return
 	}

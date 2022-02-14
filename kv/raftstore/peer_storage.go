@@ -321,17 +321,67 @@ func (ps *PeerStorage) ApplySnapshot(snapshot *eraftpb.Snapshot, kvWB *engine_ut
 	if snapshot.GetMetadata() == nil {
 		return nil, nil
 	}
-	log.Infof("%v begin to apply snapshot", ps.Tag)
 	snapData := new(rspb.RaftSnapshotData)
 	if err := snapData.Unmarshal(snapshot.Data); err != nil {
 		return nil, err
 	}
-
+	log.Infof("%v begin to apply snapshot", ps.Tag)
 	// Hint: things need to do here including: update peer storage state like raftState and applyState, etc,
 	// and send RegionTaskApply task to region worker through ps.regionSched, also remember call ps.clearMeta
 	// and ps.clearExtraData to delete stale data
 	// Your Code Here (2C).
-	return nil, nil
+	metaData := snapshot.GetMetadata()
+	if ps.raftState.LastIndex < metaData.GetIndex() {
+		ps.raftState.LastIndex = metaData.GetIndex()
+		ps.raftState.LastTerm = metaData.GetTerm()
+	}
+	if ps.raftState.HardState.Commit < metaData.GetIndex() {
+		ps.raftState.HardState.Vote = 0
+		ps.raftState.HardState.Commit = metaData.GetIndex()
+		ps.raftState.HardState.Term = metaData.GetTerm()
+	}
+	if ps.applyState.AppliedIndex < metaData.GetIndex() {
+		ps.applyState.AppliedIndex = metaData.GetIndex()
+	}
+	if ps.applyState.TruncatedState.Index < metaData.GetIndex() {
+		ps.applyState.TruncatedState.Index = metaData.GetIndex()
+		ps.applyState.TruncatedState.Term = metaData.GetTerm()
+	}
+	prevRegion := ps.region
+	if !util.RegionEqual(ps.region, snapData.GetRegion()) {
+		// 清除原来的 raftState applyState raftLog 相关 meta 信息
+		if err := ps.clearMeta(kvWB, raftWB); err != nil {
+			log.Errorf("peerStorage-%v applySnapshot clearMeta err:%v", ps.Tag, err)
+		}
+		// 清除 region 相关 key range 信息
+		ps.clearExtraData(snapData.GetRegion())
+		ps.SetRegion(snapData.GetRegion())
+		meta.WriteRegionState(kvWB, ps.region, rspb.PeerState_Normal)
+	}
+
+	log.Debugf("peerStorage-%v snapshot RegionTaskApply...", ps.Tag)
+	done := make(chan bool)
+	ps.regionSched <- &runner.RegionTaskApply{
+		RegionId: snapData.GetRegion().GetId(),
+		Notifier: done,
+		SnapMeta: metaData,
+		StartKey: snapData.GetRegion().GetStartKey(),
+		EndKey:   snapData.GetRegion().GetEndKey(),
+	}
+
+	ok := <-done
+	if !ok {
+		log.Errorf("peerStorage-%v applySnapshot RegionTaskApply fail", ps.Tag)
+	} else {
+		log.Infof("peerStorage-%v applySnapshot RegionTaskApply ok", ps.Tag)
+	}
+
+	ps.snapState.StateType = snap.SnapState_Applying
+
+	return &ApplySnapResult{
+		PrevRegion: prevRegion,
+		Region:     ps.region,
+	}, nil
 }
 
 // Save memory states to disk.
@@ -351,15 +401,15 @@ func (ps *PeerStorage) SaveReadyState(ready *raft.Ready) (*ApplySnapResult, erro
 	// 2.hard state
 	if !raft.IsEmptyHardState(ready.HardState) {
 		ps.raftState.HardState = &eraftpb.HardState{
-			Vote: ready.HardState.Vote,
-			Term: ready.HardState.Term,
+			Vote:   ready.HardState.Vote,
+			Term:   ready.HardState.Term,
 			Commit: ready.HardState.Commit,
 		}
 	}
 
 	// 3.lastIndex lastTerm
 	if len(ready.Entries) > 0 {
-		last := ready.Entries[len(ready.Entries) - 1]
+		last := ready.Entries[len(ready.Entries)-1]
 		if last.Index >= ps.raftState.LastIndex {
 			ps.raftState.LastIndex = last.Index
 			ps.raftState.LastTerm = last.Term
@@ -370,7 +420,7 @@ func (ps *PeerStorage) SaveReadyState(ready *raft.Ready) (*ApplySnapResult, erro
 
 	// 4.applyIndex
 	if len(ready.CommittedEntries) > 0 {
-		last := ready.CommittedEntries[len(ready.CommittedEntries) - 1]
+		last := ready.CommittedEntries[len(ready.CommittedEntries)-1]
 		ps.applyState.AppliedIndex = last.Index
 	}
 

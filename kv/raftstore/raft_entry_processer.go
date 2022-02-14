@@ -15,7 +15,6 @@ func (d *peerMsgHandler) process(entries []eraftpb.Entry) {
 		switch entry.GetEntryType() {
 		case eraftpb.EntryType_EntryConfChange:
 			d.processConfChange(entry)
-
 		default:
 			d.processNormal(entry)
 		}
@@ -115,7 +114,7 @@ func (d *peerMsgHandler) handleCompactLog(msg *raft_cmdpb.RaftCmdRequest) {
 	compactIndex := msg.GetAdminRequest().GetCompactLog().GetCompactIndex()
 
 	if !d.validateCompactLog(compactTerm, compactIndex) {
-		log.Infof("peer-[%s] handleCompactLog validate can compact fail (compactTerm:%d compactIndex:%d)", compactTerm, compactIndex)
+		log.Infof("peer-[%s] handleCompactLog validate can compact fail [compactTerm:%d compactIndex:%d]", compactTerm, compactIndex)
 		return
 	}
 
@@ -136,6 +135,7 @@ func (d *peerMsgHandler) validateCompactLog(compactTerm, compactIndex uint64) bo
 	}
 	term, err := d.RaftGroup.Raft.RaftLog.Term(compactIndex)
 	if err != nil {
+		log.Errorf("peer-%d validateCompactLog get %d term err:%v", d.Tag, compactIndex, err)
 		return false
 	}
 	if term != compactTerm {

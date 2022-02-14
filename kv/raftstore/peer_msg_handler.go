@@ -56,6 +56,10 @@ func (d *peerMsgHandler) HandleRaftReady() {
 		log.Errorf("[%v] peer SaveReadyState err:%v", d.Tag, err)
 		return
 	}
+	if ready.Snapshot.GetMetadata() != nil {
+		d.ctx.storeMeta.regionRanges.ReplaceOrInsert(&regionItem{region: d.Region()})
+		d.ctx.storeMeta.setRegion(d.Region(), d.peer)
+	}
 
 	d.process(ready.CommittedEntries)
 
@@ -138,11 +142,10 @@ func (d *peerMsgHandler) proposeRaftCommand(msg *raft_cmdpb.RaftCmdRequest, cb *
 		//handle admin
 		switch adminRequest.GetCmdType() {
 		case raft_cmdpb.AdminCmdType_ChangePeer:
+			return
 		case raft_cmdpb.AdminCmdType_TransferLeader:
-		default:
-			log.Errorf("[%v]peer invalid adminRequest cmdtype [%v]", d.Tag, adminRequest.GetCmdType())
+			return
 		}
-		return
 	}
 
 	requestWrapper := NewRaftCmdRequestWrapper(msg)
@@ -220,8 +223,8 @@ func (d *peerMsgHandler) ScheduleCompactLog(truncatedIndex uint64) {
 }
 
 func (d *peerMsgHandler) onRaftMsg(msg *rspb.RaftMessage) error {
-//	log.Debugf("%s handle raft message %s from %d to %d",
-//		d.Tag, msg.GetMessage().GetMsgType(), msg.GetFromPeer().GetId(), msg.GetToPeer().GetId())
+	//	log.Debugf("%s handle raft message %s from %d to %d",
+	//		d.Tag, msg.GetMessage().GetMsgType(), msg.GetFromPeer().GetId(), msg.GetToPeer().GetId())
 	if !d.validateRaftMessage(msg) {
 		return nil
 	}
