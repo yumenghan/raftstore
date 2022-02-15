@@ -408,6 +408,12 @@ func (r *Raft) Step(m pb.Message) error {
 			r.electionElapsed = 0
 			r.Lead = m.GetFrom()
 			r.handleSnapshot(m)
+		case pb.MessageType_MsgTimeoutNow:
+			r.electionElapsed = 0
+			r.handleMsgHup(pb.Message{From: r.id, To: r.id, MsgType: pb.MessageType_MsgPropose})
+		case pb.MessageType_MsgTransferLeader:
+			m.To = r.Lead
+			r.send(m)
 		}
 
 	case StateCandidate:
@@ -440,6 +446,8 @@ func (r *Raft) Step(m pb.Message) error {
 			r.handleMsgPropose(m)
 		case pb.MessageType_MsgAppendResponse:
 			r.handleMsgAppendResponse(m)
+		case pb.MessageType_MsgTransferLeader:
+			r.handleTransferLeader(m)
 		}
 	}
 	return nil
@@ -569,6 +577,21 @@ func (r *Raft) handleMsgPropose(m pb.Message) {
 	if len(m.GetEntries()) == 0 {
 		panic("msg propose empty")
 	}
+
+	for i, entry := range m.GetEntries() {
+		if entry.GetEntryType() == pb.EntryType_EntryConfChange {
+			var cc pb.ConfChange
+			if err := cc.Unmarshal(entry.GetData()); err != nil {
+				panic(err)
+			}
+			if r.PendingConfIndex == 0 {
+				r.PendingConfIndex = r.RaftLog.LastIndex() + uint64(i) + 1
+			} else {
+				log.Infof("raft-%d pendingConfIndex:%d ignoring conf change conf %v", r.id, r.PendingConfIndex, cc.NodeId)
+				m.Entries[i] = &pb.Entry{EntryType: pb.EntryType_EntryNormal}
+			}
+		}
+	}
 	r.appendEntry(m.GetEntries())
 	r.broadcastAppend()
 }
@@ -581,7 +604,6 @@ func (r *Raft) handleMsgAppendResponse(m pb.Message) {
 	}
 
 	if m.GetReject() {
-
 		if m.GetLogTerm() > 0 {
 			index := r.RaftLog.findConflictByTerm(m.GetIndex(), m.GetLogTerm())
 			progress.Match = min(index, progress.Match)
@@ -596,8 +618,15 @@ func (r *Raft) handleMsgAppendResponse(m pb.Message) {
 
 	progress.Next = m.GetIndex() + 1
 	progress.Match = m.GetIndex()
+
 	if r.RaftLog.LastIndex() > progress.Match {
 		r.sendAppend(m.GetFrom())
+	}
+
+	if r.leadTransferee == m.GetFrom() && progress.Match == r.RaftLog.LastIndex() {
+		log.Infof("raft-%d log is up to date to send MsgTimeoutNow to %d", r.id, r.leadTransferee)
+		r.send(pb.Message{From: r.id, To: m.GetFrom(), MsgType: pb.MessageType_MsgTimeoutNow, Term: r.Term})
+		r.leadTransferee = None
 	}
 
 	if r.maybeCommit() {
@@ -670,27 +699,36 @@ func (r *Raft) appendEntry(entries []*pb.Entry) {
 
 // handleSnapshot handle Snapshot RPC request
 func (r *Raft) handleSnapshot(m pb.Message) {
-	// 更新 raft state、 raft log 信息
 	snapshot := m.GetSnapshot()
 	if snapshot == nil {
+		r.send(pb.Message{From: r.id, To: m.GetFrom(), MsgType: pb.MessageType_MsgAppendResponse, Index: r.RaftLog.committed})
 		return
 	}
-	metaInfo := snapshot.GetMetadata()
+
+	if r.restore(snapshot) {
+		r.send(pb.Message{From: r.id, To: m.GetFrom(), MsgType: pb.MessageType_MsgAppendResponse, Index: r.RaftLog.LastIndex()})
+	} else {
+		r.send(pb.Message{From: r.id, To: m.GetFrom(), MsgType: pb.MessageType_MsgAppendResponse, Index: r.RaftLog.committed})
+	}
+}
+
+func (r *Raft) restore(s *pb.Snapshot) bool {
+	metaInfo := s.GetMetadata()
 	if metaInfo == nil {
-		return
+		return false
 	}
 	if metaInfo.GetIndex() <= r.RaftLog.committed {
-		return
+		return false
 	}
 
 	log.Infof("raft-%d handleSnapshot %+v", r.id, metaInfo)
 	//
 	if r.RaftLog.hasPendingSnapshot() && r.RaftLog.pendingSnapshot.GetMetadata().GetIndex() > metaInfo.GetIndex() {
 		log.Warnf("raft-%d was installing snapshot index:%d term:%d", r.id, r.RaftLog.pendingSnapshot.GetMetadata().GetIndex(), r.RaftLog.pendingSnapshot.GetMetadata().GetTerm())
-		return
+		return false
 	}
 
-	r.RaftLog.pendingSnapshot = snapshot
+	r.RaftLog.pendingSnapshot = s
 	rlog := r.RaftLog
 	rlog.entries = nil
 	rlog.offset = metaInfo.GetIndex() + 1
@@ -702,17 +740,67 @@ func (r *Raft) handleSnapshot(m pb.Message) {
 	for _, node := range state.GetNodes() {
 		r.Prs[node] = &Progress{}
 	}
-	r.becomeFollower(m.GetTerm(), m.GetFrom())
-
 	log.Infof("raft-%d handleSnapshot finish raftLog:%s", r.id, rlog.String())
+	return true
+}
+
+func (r *Raft) handleTransferLeader(m pb.Message) {
+	transferee := m.GetFrom()
+	progress, ok := r.Prs[transferee]
+	if !ok {
+		log.Errorf("raft-%v handleTransferLeader transfee %d not in progress ", r.id, transferee)
+		return
+	}
+	// transfer 之后，应用没用及时更新，导致一直发送 tranfer 消息
+	if r.id == transferee {
+		return
+	}
+	if r.leadTransferee == transferee {
+		// 已经在同步中
+		return
+	}
+	log.Infof("raft-%d start to transfer leader to %d", r.id, transferee)
+	if r.RaftLog.LastIndex() > progress.Match {
+		// 需要暂停 propose 并且同步日志
+		r.sendAppend(transferee)
+		r.leadTransferee = transferee
+		return
+	}
+
+	log.Infof("raft-%d send msgTimeOutNow immediately to %d", r.id, transferee)
+	// 满足条件可以直接发送
+	r.send(pb.Message{From: r.id, To: transferee, MsgType: pb.MessageType_MsgTimeoutNow, Term: r.Term})
+	r.leadTransferee = None
 }
 
 // addNode add a new node to raft group
 func (r *Raft) addNode(id uint64) {
-	// Your Code Here (3A).
+	prs := r.Prs[id]
+	if prs != nil {
+		log.Infof("raft-%d addNode %d already add", r.id, id)
+		return
+	}
+
+	r.Prs[id] = &Progress{
+		Match: r.RaftLog.LastIndex(),
+		Next:  r.RaftLog.LastIndex() + 1,
+	}
+
+	r.sendHeartbeat(id)
+	log.Infof("raft-%d addNode %d ok", r.id, id)
+	r.PendingConfIndex = 0
 }
 
 // removeNode remove a node from raft group
 func (r *Raft) removeNode(id uint64) {
-	// Your Code Here (3A).
+	prs := r.Prs[id]
+	if prs == nil {
+		log.Infof("raft-%d removeNode %d has already remove", r.id, id)
+		return
+	}
+
+	delete(r.Prs, id)
+	r.maybeCommit()
+	log.Infof("raft-%d removeNode %d ok", r.id, id)
+	r.PendingConfIndex = 0
 }
