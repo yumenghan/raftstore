@@ -350,6 +350,7 @@ func (r *Raft) reset(term uint64) {
 	}
 	r.Lead = None
 
+	r.PendingConfIndex = 0
 	r.electionElapsed = 0
 	r.heartbeatElapsed = 0
 	r.votes = make(map[uint64]bool, len(r.Prs))
@@ -410,6 +411,10 @@ func (r *Raft) Step(m pb.Message) error {
 			r.handleSnapshot(m)
 		case pb.MessageType_MsgTimeoutNow:
 			r.electionElapsed = 0
+			if _, ok := r.Prs[r.id]; !ok {
+				log.Warnf("raft-%d was not int raft group drop msg", r.id)
+				return nil
+			}
 			r.handleMsgHup(pb.Message{From: r.id, To: r.id, MsgType: pb.MessageType_MsgPropose})
 		case pb.MessageType_MsgTransferLeader:
 			m.To = r.Lead
@@ -584,7 +589,7 @@ func (r *Raft) handleMsgPropose(m pb.Message) {
 			if err := cc.Unmarshal(entry.GetData()); err != nil {
 				panic(err)
 			}
-			if r.PendingConfIndex == 0 {
+			if r.PendingConfIndex <= r.RaftLog.applied {
 				r.PendingConfIndex = r.RaftLog.LastIndex() + uint64(i) + 1
 			} else {
 				log.Infof("raft-%d pendingConfIndex:%d ignoring conf change conf %v", r.id, r.PendingConfIndex, cc.NodeId)
