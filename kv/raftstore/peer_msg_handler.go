@@ -142,8 +142,14 @@ func (d *peerMsgHandler) proposeRaftCommand(msg *raft_cmdpb.RaftCmdRequest, cb *
 		//handle admin
 		switch adminRequest.GetCmdType() {
 		case raft_cmdpb.AdminCmdType_ChangePeer:
+
+			//d.RaftGroup.ProposeConfChange()
 			return
 		case raft_cmdpb.AdminCmdType_TransferLeader:
+			d.RaftGroup.TransferLeader(adminRequest.GetTransferLeader().GetPeer().GetId())
+			resp := newCmdResp()
+			resp.AdminResponse.TransferLeader = &raft_cmdpb.TransferLeaderResponse{}
+			cb.Done(resp)
 			return
 		}
 	}
