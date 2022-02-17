@@ -136,19 +136,30 @@ func (d *peerMsgHandler) proposeRaftCommand(msg *raft_cmdpb.RaftCmdRequest, cb *
 		cb.Done(ErrResp(err))
 		return
 	}
-	// Your Code Here (2B).
 	adminRequest := msg.GetAdminRequest()
 	if adminRequest != nil {
 		//handle admin
 		switch adminRequest.GetCmdType() {
 		case raft_cmdpb.AdminCmdType_ChangePeer:
-
-			//d.RaftGroup.ProposeConfChange()
+			peerData, err := adminRequest.GetChangePeer().GetPeer().Marshal()
+			if err != nil {
+				log.Errorf("[%v] peer proposeRaftCommand change peer marshal err:%v", d.Tag, err)
+				return
+			}
+			cc := eraftpb.ConfChange{
+				ChangeType: adminRequest.GetChangePeer().GetChangeType(),
+				NodeId:     adminRequest.GetChangePeer().GetPeer().GetId(),
+				Context:    peerData,
+			}
+			d.RaftGroup.ProposeConfChange(cc)
+			resp := newCmdResp()
+			resp.AdminResponse = &raft_cmdpb.AdminResponse{CmdType: raft_cmdpb.AdminCmdType_ChangePeer, ChangePeer: &raft_cmdpb.ChangePeerResponse{}}
+			cb.Done(resp)
 			return
 		case raft_cmdpb.AdminCmdType_TransferLeader:
 			d.RaftGroup.TransferLeader(adminRequest.GetTransferLeader().GetPeer().GetId())
 			resp := newCmdResp()
-			resp.AdminResponse.TransferLeader = &raft_cmdpb.TransferLeaderResponse{}
+			resp.AdminResponse = &raft_cmdpb.AdminResponse{CmdType: raft_cmdpb.AdminCmdType_TransferLeader, TransferLeader: &raft_cmdpb.TransferLeaderResponse{}}
 			cb.Done(resp)
 			return
 		}
@@ -356,8 +367,8 @@ func handleStaleMsg(trans Transport, msg *rspb.RaftMessage, curEpoch *metapb.Reg
 	msgType := msg.Message.GetMsgType()
 
 	if !needGC {
-		log.Infof("[region %d] raft message %s is stale, current %v ignore it",
-			regionID, msgType, curEpoch)
+		log.Infof("[region %d] raft message fromPeer:%d-> toPeer:%d %s is stale, current %v ignore it",
+			regionID, fromPeer.GetId(), toPeer.GetId(), msgType, curEpoch)
 		return
 	}
 	gcMsg := &rspb.RaftMessage{

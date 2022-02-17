@@ -7,6 +7,7 @@ import (
 	"github.com/pingcap-incubator/tinykv/kv/util/engine_util"
 	"github.com/pingcap-incubator/tinykv/log"
 	"github.com/pingcap-incubator/tinykv/proto/pkg/eraftpb"
+	"github.com/pingcap-incubator/tinykv/proto/pkg/metapb"
 	"github.com/pingcap-incubator/tinykv/proto/pkg/raft_cmdpb"
 )
 
@@ -22,7 +23,48 @@ func (d *peerMsgHandler) process(entries []eraftpb.Entry) {
 }
 
 func (d *peerMsgHandler) processConfChange(entry eraftpb.Entry) {
+	var cc eraftpb.ConfChange
+	if err := cc.Unmarshal(entry.GetData()); err != nil {
+		log.Errorf("[%v] peer processConfChange unmarshal data err:%v", d.Tag, err)
+		return
+	}
+	switch cc.GetChangeType() {
+	case eraftpb.ConfChangeType_AddNode:
+		if !d.peerStorage.ApplyConfChange(&cc) {
+			log.Warnf("[%v] peer peerStorage ApplyConfChange fail", d.Tag)
+			return
+		}
+		var peer metapb.Peer
+		if err := peer.Unmarshal(cc.GetContext()); err != nil {
+			log.Errorf("[%v] peer processConfChange unmarshal confChange err:%v", d.Tag, err)
+			return
+		}
+		// 更新 storeMeta 的 region 结构体
+		d.ctx.storeMeta.setRegion(d.Region(), d.peer)
+		d.insertPeerCache(&peer)
+	case eraftpb.ConfChangeType_RemoveNode:
+		peer := d.peer.getPeerFromCache(cc.GetNodeId())
+		if peer == nil {
+			log.Warnf("[%v] peer processConfChange getPeerFromCache %d is nil ", d.Tag, cc.GetNodeId())
+			return
+		}
+		if util.RemovePeer(d.Region(), peer.GetStoreId()) == nil {
+			log.Infof("[%v] peer processConfChange peer %v has already delete in region", d.Tag)
+			return
+		}
+		if d.Meta.GetId() == cc.GetNodeId() {
+			d.destroyPeer()
+		} else {
+			if !d.peerStorage.ApplyConfChange(&cc) {
+				log.Warnf("[%v] peer peerStorage ApplyConfChange fail", d.Tag)
+				return
+			}
+		}
+		d.ctx.storeMeta.setRegion(d.Region(), d.peer)
+		d.removePeerCache(peer.GetId())
+	}
 
+	d.RaftGroup.ApplyConfChange(cc)
 }
 
 func (d *peerMsgHandler) processNormal(entry eraftpb.Entry) {
