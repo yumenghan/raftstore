@@ -367,8 +367,8 @@ func handleStaleMsg(trans Transport, msg *rspb.RaftMessage, curEpoch *metapb.Reg
 	msgType := msg.Message.GetMsgType()
 
 	if !needGC {
-		log.Infof("[region %d] raft message fromPeer:%d-> toPeer:%d %s is stale, current %v ignore it",
-			regionID, fromPeer.GetId(), toPeer.GetId(), msgType, curEpoch)
+		log.Infof("[region %d] raft message fromPeer:%d-> toPeer:%d %s is stale, fromPeer %v current %v ignore it",
+			regionID, fromPeer.GetId(), toPeer.GetId(), msgType, msg.GetRegionEpoch(), curEpoch)
 		return
 	}
 	gcMsg := &rspb.RaftMessage{

@@ -438,66 +438,6 @@ func (ps *PeerStorage) SaveReadyState(ready *raft.Ready) (*ApplySnapResult, erro
 	return snapshot, nil
 }
 
-func (ps *PeerStorage) ApplyConfChange(cc *eraftpb.ConfChange) bool {
-	if cc == nil {
-		return false
-	}
-	region := &metapb.Region{}
-	util.CloneMsg(ps.region, region)
-	region.RegionEpoch.ConfVer++
-	switch cc.GetChangeType() {
-	case eraftpb.ConfChangeType_AddNode:
-		return ps.applyAddNode(cc, region)
-	case eraftpb.ConfChangeType_RemoveNode:
-		return ps.applyRemoveNode(cc, region)
-	default:
-		log.Errorf("[%v] peerStorage ApplyConfChange valid changeType:%v", ps.Tag, cc.ChangeType)
-	}
-	return false
-}
-
-func (ps *PeerStorage) applyAddNode(cc *eraftpb.ConfChange, region *metapb.Region) bool {
-
-	region.RegionEpoch.ConfVer++
-
-	var peer metapb.Peer
-	if err := peer.Unmarshal(cc.GetContext()); err != nil {
-		log.Errorf("[%v] peerStorage applyAddNode unmarshal err:%v", ps.Tag, err)
-		return false
-	}
-
-	if util.FindPeer(region, peer.GetStoreId()) != nil {
-		log.Warnf("[%v] peerStorage applyAddNode %v has already in region %v", ps.Tag, peer, region)
-		return false
-	}
-	// id、 storeId
-	region.Peers = append(region.Peers, &peer)
-
-	wb := &engine_util.WriteBatch{}
-	meta.WriteRegionState(wb, ps.region, rspb.PeerState_Normal)
-	if err := wb.WriteToDB(ps.Engines.Kv); err != nil {
-		log.Errorf("[%v] peerStorage applyAddNode writeToDB err:%v", ps.Tag, err)
-		return false
-	}
-
-	ps.SetRegion(region)
-	return true
-}
-
-func (ps *PeerStorage) applyRemoveNode(cc *eraftpb.ConfChange, region *metapb.Region) bool {
-	ps.region.RegionEpoch.ConfVer++
-
-	var kvwb engine_util.WriteBatch
-	meta.WriteRegionState(&kvwb, ps.region, rspb.PeerState_Normal)
-	if err := kvwb.WriteToDB(ps.Engines.Kv); err != nil {
-		log.Errorf("[%v] applyRemoveNode writeToDB err:%v", ps.Tag, err)
-		return false
-	}
-
-	ps.SetRegion(region)
-	return true
-}
-
 func (ps *PeerStorage) ClearData() {
 	ps.clearRange(ps.region.GetId(), ps.region.GetStartKey(), ps.region.GetEndKey())
 }

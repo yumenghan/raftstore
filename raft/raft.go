@@ -592,7 +592,7 @@ func (r *Raft) handleMsgPropose(m pb.Message) {
 			if r.PendingConfIndex <= r.RaftLog.applied {
 				r.PendingConfIndex = r.RaftLog.LastIndex() + uint64(i) + 1
 			} else {
-				log.Infof("raft-%d pendingConfIndex:%d ignoring conf change conf %v", r.id, r.PendingConfIndex, cc.NodeId)
+				log.Infof("raft-%d pendingConfIndex:%d applied:%d ignoring conf change conf %v", r.id, r.PendingConfIndex, r.RaftLog.applied, cc)
 				m.Entries[i] = &pb.Entry{EntryType: pb.EntryType_EntryNormal}
 			}
 		}
@@ -787,8 +787,8 @@ func (r *Raft) addNode(id uint64) {
 	}
 
 	r.Prs[id] = &Progress{
-		Match: r.RaftLog.LastIndex(),
-		Next:  r.RaftLog.LastIndex() + 1,
+		Match: 0,
+		Next:  1,
 	}
 
 	r.sendHeartbeat(id)
