@@ -146,12 +146,29 @@ func (d *peerMsgHandler) proposeRaftCommand(msg *raft_cmdpb.RaftCmdRequest, cb *
 				log.Errorf("[%v] peer proposeRaftCommand change peer marshal err:%v", d.Tag, err)
 				return
 			}
-			cc := eraftpb.ConfChange{
-				ChangeType: adminRequest.GetChangePeer().GetChangeType(),
-				NodeId:     adminRequest.GetChangePeer().GetPeer().GetId(),
-				Context:    peerData,
+			// 删除的是自身且为 leader， 先 transfer， 删除留到下一个 leader 来完成
+			if d.IsLeader() && adminRequest.GetChangePeer().GetChangeType() == eraftpb.ConfChangeType_RemoveNode && d.Meta.GetId() == adminRequest.GetChangePeer().GetPeer().GetId() {
+				progress := d.RaftGroup.GetProgress()
+				var maxMatch uint64
+				var transfeer uint64
+				for i, prs := range progress {
+					if prs.Match > maxMatch {
+						maxMatch = prs.Match
+						transfeer = i
+					}
+				}
+				if transfeer == 0 {
+					return
+				}
+				d.RaftGroup.TransferLeader(transfeer)
+			} else {
+				cc := eraftpb.ConfChange{
+					ChangeType: adminRequest.GetChangePeer().GetChangeType(),
+					NodeId:     adminRequest.GetChangePeer().GetPeer().GetId(),
+					Context:    peerData,
+				}
+				d.RaftGroup.ProposeConfChange(cc)
 			}
-			d.RaftGroup.ProposeConfChange(cc)
 			resp := newCmdResp()
 			resp.AdminResponse = &raft_cmdpb.AdminResponse{CmdType: raft_cmdpb.AdminCmdType_ChangePeer, ChangePeer: &raft_cmdpb.ChangePeerResponse{}}
 			cb.Done(resp)
