@@ -89,6 +89,8 @@ func (d *peerMsgHandler) processNormal(entry eraftpb.Entry) {
 		switch req.GetMsg().GetAdminRequest().GetCmdType() {
 		case raft_cmdpb.AdminCmdType_CompactLog:
 			d.handleCompactLog(req.GetMsg())
+		case raft_cmdpb.AdminCmdType_Split:
+			d.handleRegionSplit(req.GetMsg())
 		}
 		return
 	}
@@ -225,6 +227,71 @@ func (d *peerMsgHandler) checkKeyInRegion(key []byte, cb *message.Callback) bool
 		return false
 	}
 	return true
+}
+
+func (d *peerMsgHandler) handleRegionSplit(msg *raft_cmdpb.RaftCmdRequest) {
+	splitRequest := msg.GetAdminRequest().GetSplit()
+	// split key 、 newRegionId 、newPeersId
+
+	// 原 region
+	region := &metapb.Region{}
+	util.CloneMsg(d.Region(), region)
+
+	peers := make([]*metapb.Peer, len(splitRequest.GetNewPeerIds()))
+	for _, id := range splitRequest.GetNewPeerIds() {
+		var storeId uint64
+		for _, peer := range region.GetPeers() {
+			if peer.GetId() == id {
+				storeId = peer.GetStoreId()
+			}
+		}
+		peers = append(peers, &metapb.Peer{
+			Id:      id,
+			StoreId: storeId,
+		})
+	}
+
+	// newRegion
+	splitRegion := &metapb.Region{
+		Id:          splitRequest.GetNewRegionId(),
+		StartKey:    splitRequest.GetSplitKey(),
+		EndKey:      region.GetEndKey(),
+		Peers:       peers,
+		RegionEpoch: &metapb.RegionEpoch{},
+	}
+	writeInitialApplyState()
+	writeInitialRaftState()
+	meta.WriteRegionState()
+
+	peer, err := createPeer(d.Meta.GetStoreId(), d.ctx.cfg, d.ctx.schedulerTaskSender, d.peerStorage.Engines, splitRegion)
+	if err != nil {
+		log.Errorf("[%v] peer handleRegionSplit createPeerr err:%v", d.Tag, err)
+		return
+	}
+	// set splitRegion info
+	d.ctx.storeMeta.regionRanges.ReplaceOrInsert(&regionItem{region: splitRegion})
+	d.ctx.storeMeta.regions[splitRegion.GetId()] = splitRegion
+	d.ctx.router.register(peer)
+
+	// trigger start
+	err = d.ctx.router.send(splitRegion.GetId(), message.Msg{RegionID: splitRegion.GetId(), Type: message.MsgTypeStart})
+	if err != nil {
+		log.Errorf("[%v] peer handleRegionSplit send msg to trigger start err :%v", d.Tag, err)
+		return
+	}
+
+	kvwb := &engine_util.WriteBatch{}
+	// set origin region
+	region.EndKey = splitRequest.GetSplitKey()
+	region.RegionEpoch.Version++
+	meta.WriteRegionState(kvwb, region, rspb.PeerState_Normal)
+	if err := kvwb.WriteToDB(d.ctx.engine.Kv); err != nil {
+		log.Errorf("[%v] peer handleRegionSplit writeToDB err:%v", d.Tag, err)
+		return
+	}
+	d.ctx.storeMeta.regionRanges.ReplaceOrInsert(&regionItem{region: region})
+	d.ctx.storeMeta.regions[region.GetId()] = region
+	d.ctx.storeMeta.setRegion(region, d.peer)
 }
 
 func isAdminRequest(req *raft_cmdpb.RaftCmdRequest) bool {
