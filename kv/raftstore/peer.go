@@ -398,10 +398,31 @@ func (p *peer) appendProposal(prop *proposal) {
 func (p *peer) popProposal(index uint64, term uint64) *proposal {
 	for i, proposal := range p.proposals {
 		if proposal.index == index && proposal.term == term {
-			p.proposals[i] = p.proposals[len(p.proposals) - 1]
-			p.proposals = p.proposals[:len(p.proposals) - 1]
+			p.proposals[i] = p.proposals[len(p.proposals)-1]
+			p.proposals = p.proposals[:len(p.proposals)-1]
 			return proposal
 		}
 	}
 	return nil
+}
+
+type PeerSlice []*metapb.Peer
+
+func (ps PeerSlice) Less(i, j int) bool {
+	ips, jps := ps[i], ps[j]
+	if ips.GetId() < jps.GetStoreId() {
+		return true
+	}
+	if ips.GetId() == jps.GetId() {
+		return ips.GetStoreId() < jps.GetStoreId()
+	}
+	return false
+}
+
+func (ps PeerSlice) Swap(i, j int) {
+	ps[i], ps[j] = ps[j], ps[i]
+}
+
+func (ps PeerSlice) Len() int {
+	return len(ps)
 }
