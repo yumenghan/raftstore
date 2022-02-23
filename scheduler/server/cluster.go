@@ -14,8 +14,10 @@
 package server
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"github.com/pingcap-incubator/tinykv/kv/raftstore/util"
 	"path"
 	"sync"
 	"time"
@@ -278,9 +280,48 @@ func (c *RaftCluster) handleStoreHeartbeat(stats *schedulerpb.StoreStats) error 
 
 // processRegionHeartbeat updates the region information.
 func (c *RaftCluster) processRegionHeartbeat(region *core.RegionInfo) error {
-	// Your Code Here (3C).
+	// check whether there is a region with the same id in local storage
+	searchRegion := c.GetRegion(region.GetID())
+	if searchRegion != nil {
+		// check epoch
+		if !c.checkRegionEpoch(searchRegion.GetRegionEpoch(), region.GetRegionEpoch()) {
+			return ErrRegionIsStale(region.GetMeta(), searchRegion.GetMeta())
+		}
+		// need update
+		if !util.RegionEqual(searchRegion.GetMeta(), region.GetMeta()) {
+			return c.flushRegion(region)
+		}
 
-	return nil
+		if c.checkRegionNeedUpdate(searchRegion, region) {
+			return c.flushRegion(region)
+		}
+	}
+
+	// scan all regions that overlap with it
+	scanRegions := c.ScanRegions(region.GetStartKey(), region.GetEndKey(), 0)
+	if len(scanRegions) == 0 {
+		return c.flushRegion(region)
+	}
+
+	needUpdate := true
+	for _, scanRegion := range scanRegions {
+		if !c.checkRegionEpoch(scanRegion.GetRegionEpoch(), region.GetRegionEpoch()) {
+			needUpdate = false
+			break
+		}
+		if !c.checkRegionNeedUpdate(scanRegion, region) {
+			needUpdate = false
+			break
+		}
+
+	}
+
+	if !needUpdate {
+		log.Warn("RaftCluster processRegionHeartbeat", zap.String("ScanRegions", fmt.Sprintf("origin=nil;new=%+v", region.GetRegionEpoch())))
+		return ErrRegionIsStale(region.GetMeta(), nil)
+	}
+
+	return c.flushRegion(region)
 }
 
 func (c *RaftCluster) updateStoreStatusLocked(id uint64) {
@@ -290,6 +331,51 @@ func (c *RaftCluster) updateStoreStatusLocked(id uint64) {
 	leaderRegionSize := c.core.GetStoreLeaderRegionSize(id)
 	regionSize := c.core.GetStoreRegionSize(id)
 	c.core.UpdateStoreStatus(id, leaderCount, regionCount, pendingPeerCount, leaderRegionSize, regionSize)
+}
+
+func (c *RaftCluster) checkRegionEpoch(old *metapb.RegionEpoch, new *metapb.RegionEpoch ) bool {
+	if old.GetConfVer() > new.GetConfVer() {
+		return false
+	}
+	if old.GetVersion() > new.GetVersion() {
+		return false
+	}
+	return true
+}
+
+func (c *RaftCluster) checkRegionNeedUpdate(orignRegion, newRegion *core.RegionInfo) bool {
+	//If the leader changed, it cannot be skipped
+	if orignRegion.GetLeader().GetId() != newRegion.GetLeader().GetId() {
+		return true
+	}
+	//If the ApproximateSize changed, it cannot be skipped
+	if orignRegion.GetApproximateSize() != newRegion.GetApproximateSize() {
+		return true
+	}
+	//If the new one or original one has pending peer, it cannot be skipped
+	if len(orignRegion.GetPendingPeers()) > 0 || len(newRegion.GetPendingPeers()) > 0 {
+		return true
+	}
+	//start/end key changed;
+	if !bytes.Equal(orignRegion.GetStartKey(), newRegion.GetStartKey()) {
+		return true
+	}
+	if !bytes.Equal(orignRegion.GetEndKey(), newRegion.GetEndKey()) {
+		return true
+	}
+	return false
+}
+
+func (c *RaftCluster) flushRegion(region *core.RegionInfo) error {
+	err := c.putRegion(region)
+	if err != nil {
+		log.Warn("flushRegion", zap.Error(err))
+		return err
+	}
+	for sid, _ := range region.GetStoreIds() {
+		c.updateStoreStatusLocked(sid)
+	}
+	return nil
 }
 
 func makeStoreKey(clusterRootPath string, storeID uint64) string {
