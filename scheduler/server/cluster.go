@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"github.com/pingcap-incubator/tinykv/kv/raftstore/util"
 	"path"
+	"sort"
 	"sync"
 	"time"
 
@@ -313,7 +314,6 @@ func (c *RaftCluster) processRegionHeartbeat(region *core.RegionInfo) error {
 			needUpdate = false
 			break
 		}
-
 	}
 
 	if !needUpdate {
@@ -333,7 +333,7 @@ func (c *RaftCluster) updateStoreStatusLocked(id uint64) {
 	c.core.UpdateStoreStatus(id, leaderCount, regionCount, pendingPeerCount, leaderRegionSize, regionSize)
 }
 
-func (c *RaftCluster) checkRegionEpoch(old *metapb.RegionEpoch, new *metapb.RegionEpoch ) bool {
+func (c *RaftCluster) checkRegionEpoch(old *metapb.RegionEpoch, new *metapb.RegionEpoch) bool {
 	if old.GetConfVer() > new.GetConfVer() {
 		return false
 	}
@@ -363,9 +363,35 @@ func (c *RaftCluster) checkRegionNeedUpdate(orignRegion, newRegion *core.RegionI
 	if !bytes.Equal(orignRegion.GetEndKey(), newRegion.GetEndKey()) {
 		return true
 	}
+
+	if peersChanged(orignRegion.GetPeers(), newRegion.GetPeers()) {
+		return true
+	}
 	return false
 }
 
+func peersChanged(origin, new []*metapb.Peer) bool {
+	if len(origin) != len(new) {
+		return true
+	}
+	compare := func(arr []*metapb.Peer, i, j int) bool {
+		return arr[i].GetId() < arr[j].GetId()
+	}
+	sort.Slice(origin, func(i, j int) bool {
+		return compare(origin, i, j)
+	})
+	sort.Slice(new, func(i, j int) bool {
+		return compare(new, i, j)
+	})
+	for i := 0; i < len(origin); i++ {
+		if origin[i].GetId() != new[i].GetId() {
+			return false
+		}
+	}
+	return true
+}
+
+// 更新 regionTree、regionMap、leaderCnt、pending 数量
 func (c *RaftCluster) flushRegion(region *core.RegionInfo) error {
 	err := c.putRegion(region)
 	if err != nil {

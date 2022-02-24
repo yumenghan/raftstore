@@ -18,6 +18,9 @@ import (
 	"github.com/pingcap-incubator/tinykv/scheduler/server/schedule"
 	"github.com/pingcap-incubator/tinykv/scheduler/server/schedule/operator"
 	"github.com/pingcap-incubator/tinykv/scheduler/server/schedule/opt"
+	"github.com/pingcap/log"
+	"go.uber.org/zap"
+	"sort"
 )
 
 func init() {
@@ -76,7 +79,98 @@ func (s *balanceRegionScheduler) IsScheduleAllowed(cluster opt.Cluster) bool {
 }
 
 func (s *balanceRegionScheduler) Schedule(cluster opt.Cluster) *operator.Operator {
-	// Your Code Here (3C).
+	if len(cluster.GetStores()) <= 1 {
+		return nil
+	}
+
+	var availableStores []*core.StoreInfo
+	stores := cluster.GetStores()
+	for _, s := range stores {
+		if s.DownTime() < cluster.GetMaxStoreDownTime() {
+			availableStores = append(availableStores, s)
+		}
+	}
+
+	if len(availableStores) <= 0 {
+		return nil
+	}
+	// 排序
+	sortStores := core.StoreSlice(availableStores)
+	sort.Sort(sortStores)
+
+	var region *core.RegionInfo
+	var fromStore *core.StoreInfo
+	var toStore *core.StoreInfo
+	for i := len(sortStores) - 1; i >= 0; i-- {
+		fromStore = sortStores[i]
+		for j := 0; j < i; j++ {
+			toStore = sortStores[j]
+			if region = s.pickUpRegion(fromStore, toStore, cluster); region != nil {
+				break
+			}
+		}
+	}
+
+	if region == nil {
+		return nil
+	}
+
+	peer, err := cluster.AllocPeer(toStore.GetID())
+	if err != nil {
+		log.Error("cluster allocPeer err", zap.Error(err))
+		return nil
+	}
+
+	op, err := operator.CreateMovePeerOperator("", cluster, region, operator.OpBalance, fromStore.GetID(), toStore.GetID(), peer.GetId())
+	if err != nil {
+		log.Error("operator createMovePeerOperator err", zap.Error(err))
+		return nil
+	}
+
+	log.Info("scheduler move peer success", zap.String("scheduler", s.GetName()), zap.Uint64("regionId", region.GetID()), zap.Uint64("fromStore", fromStore.GetID()), zap.Uint64("toStore", toStore.GetID()), zap.Uint64("peer", peer.GetId()))
+	return op
+}
+
+func (s *balanceRegionScheduler) pickUpRegion(fromStore, toStore *core.StoreInfo, cluster opt.Cluster) *core.RegionInfo {
+	var region *core.RegionInfo
+	start := []byte("")
+	end := []byte("")
+	cluster.GetPendingRegionsWithLock(fromStore.GetID(), func(container core.RegionsContainer) {
+		region = container.RandomRegion(start, end)
+	})
+	if validateRegion(region, fromStore, toStore, cluster) {
+		return region
+	}
+
+	cluster.GetFollowersWithLock(fromStore.GetID(), func(container core.RegionsContainer) {
+		region = container.RandomRegion(start, end)
+	})
+	if validateRegion(region, fromStore, toStore, cluster) {
+		return region
+	}
+
+	cluster.GetLeadersWithLock(fromStore.GetID(), func(container core.RegionsContainer) {
+		region = container.RandomRegion(start, end)
+	})
+	if validateRegion(region, fromStore, toStore, cluster) {
+		return region
+	}
 
 	return nil
+}
+
+func validateRegion(region *core.RegionInfo, fromStore, toStore *core.StoreInfo, cluster opt.Cluster) bool {
+	if region == nil {
+		return false
+	}
+	if region.GetStorePeer(toStore.GetID()) != nil {
+		return false
+	}
+	if len(region.GetPeers()) < cluster.GetMaxReplicas() {
+		return false
+	}
+	if fromStore.GetRegionSize()-toStore.GetRegionSize() > 2*region.GetApproximateSize() {
+		return true
+	}
+	return false
 }
