@@ -86,7 +86,7 @@ func (s *balanceRegionScheduler) Schedule(cluster opt.Cluster) *operator.Operato
 	var availableStores []*core.StoreInfo
 	stores := cluster.GetStores()
 	for _, s := range stores {
-		if s.DownTime() < cluster.GetMaxStoreDownTime() {
+		if s.DownTime() < cluster.GetMaxStoreDownTime() && s.IsUp(){
 			availableStores = append(availableStores, s)
 		}
 	}
@@ -108,6 +108,9 @@ func (s *balanceRegionScheduler) Schedule(cluster opt.Cluster) *operator.Operato
 			if region = s.pickUpRegion(fromStore, toStore, cluster); region != nil {
 				break
 			}
+		}
+		if region != nil {
+			break
 		}
 	}
 
