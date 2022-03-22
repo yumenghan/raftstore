@@ -51,12 +51,41 @@ func (txn *MvccTxn) PutWrite(key []byte, ts uint64, write *Write) {
 	txn.writes = append(txn.writes, storage.Modify{put})
 }
 
+func (txn *MvccTxn) GetWrite(key []byte) (*Write, uint64, error) {
+	itr := txn.Reader.IterCF(engine_util.CfWrite)
+	defer itr.Close()
+	itr.Seek(EncodeKey(key, txn.StartTS))
+	if !itr.Valid() {
+		return nil, 0, nil
+	}
+	uk := DecodeUserKey(itr.Item().Key())
+	if !bytes.Equal(uk, key) {
+		return nil, 0, nil
+	}
+	item := itr.Item()
+	if item == nil {
+		return nil, 0, nil
+	}
+	value, err := item.Value()
+	if err != nil {
+		return nil, 0, err
+	}
+	write, err := ParseWrite(value)
+	if err != nil {
+		return nil, 0, err
+	}
+	return write, decodeTimestamp(item.Key()), nil
+}
+
 // GetLock returns a lock if key is locked. It will return (nil, nil) if there is no lock on key, and (nil, err)
 // if an error occurs during lookup.
 func (txn *MvccTxn) GetLock(key []byte) (*Lock, error) {
 	v, err := txn.Reader.GetCF(engine_util.CfLock, key)
 	if err != nil {
 		return nil, &KeyError{}
+	}
+	if len(v) == 0 {
+		return nil, nil
 	}
 	return ParseLock(v)
 }
@@ -85,7 +114,7 @@ func (txn *MvccTxn) DeleteLock(key []byte) {
 func (txn *MvccTxn) GetValue(key []byte) ([]byte, error) {
 	it := txn.Reader.IterCF(engine_util.CfWrite)
 	defer it.Close()
-	// find current write
+	// find current write 读放大
 	it.Seek(EncodeKey(key, txn.StartTS))
 	if !it.Valid() {
 		return nil, nil
@@ -134,9 +163,10 @@ func (txn *MvccTxn) CurrentWrite(key []byte) (*Write, uint64, error) {
 	defer it.Close()
 	it.Seek(EncodeKey(key, math.MaxUint64))
 	encodeKey := EncodeKey(key, txn.StartTS)
+	// 遍历整个 key 的所有版本
 	for it.Valid() {
 		item := it.Item()
-		// 排除 commit ts 比 start ts 小的 change
+		// 排除 commit ts 比 start ts 大的 change
 		if bytes.Compare(item.Key(), encodeKey) > 0 {
 			return nil, 0, nil
 		}
