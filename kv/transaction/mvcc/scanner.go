@@ -31,6 +31,9 @@ func (scan *Scanner) Close() {
 	scan.it.Close()
 }
 
+func (scan *Scanner) Valid() bool {
+	return scan.it.Valid()
+}
 // Next returns the next key/value pair from the scanner. If the scanner is exhausted, then it will return `nil, nil, nil`.
 func (scan *Scanner) Next() ([]byte, []byte, error) {
 	for scan.it.Valid() {
@@ -43,25 +46,26 @@ func (scan *Scanner) Next() ([]byte, []byte, error) {
 		}
 		value, err := item.Value()
 		if err != nil {
-
+			scan.it.Next()
+			return nil,nil, err
 		}
 		write, err := ParseWrite(value)
 		if err != nil {
-
-		}
-		//
-		switch write.Kind {
-		case WriteKindDelete:
-		case WriteKindRollback:
-		case WriteKindPut:
-			val, err := scan.txn.Reader.GetCF(engine_util.CfDefault, EncodeKey(key, write.StartTS))
-			if err != nil {
-
-			}
 			scan.it.Next()
-			return key, val, nil
+			return nil, nil, err
+		}
+		if write.Kind != WriteKindPut {
+			scan.it.Next()
+			continue
+		}
+		val, err := scan.txn.Reader.GetCF(engine_util.CfDefault, EncodeKey(key, write.StartTS))
+		if err != nil {
+			scan.it.Next()
+			return nil, nil, err
 		}
 
+		scan.it.Next()
+		return key, val, nil
 	}
 	return nil, nil, nil
 }

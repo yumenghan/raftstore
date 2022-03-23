@@ -206,13 +206,13 @@ func (server *Server) KvScan(_ context.Context, req *kvrpcpb.ScanRequest) (*kvrp
 		return &resp, nil
 	}
 
-	txn := mvcc.NewMvccTxn(reader, mvcc.TsMax)
+	txn := mvcc.NewMvccTxn(reader, req.GetVersion())
 	scanner := mvcc.NewScanner(req.GetStartKey(), txn)
 	if scanner == nil {
 		return &resp, nil
 	}
 	defer scanner.Close()
-	for i := uint32(0); i < req.GetLimit(); i++ {
+	for i := uint32(0); i < req.GetLimit() && scanner.Valid();  {
 		k, v, err := scanner.Next()
 		if err != nil {
 			log.Warnf("Kvscan scanner next err:%v", err)
@@ -222,6 +222,7 @@ func (server *Server) KvScan(_ context.Context, req *kvrpcpb.ScanRequest) (*kvrp
 			Key: k,
 			Value: v,
 		})
+		i++
 	}
 	return &resp, nil
 }
@@ -320,7 +321,7 @@ func (server *Server) KvBatchRollback(_ context.Context, req *kvrpcpb.BatchRollb
 		//server.rollBack()
 		return &resp, nil
 	}
-	return nil, nil
+	return &resp, nil
 }
 
 func (server *Server) KvResolveLock(_ context.Context, req *kvrpcpb.ResolveLockRequest) (*kvrpcpb.ResolveLockResponse, error) {
@@ -359,7 +360,6 @@ func (server *Server) KvResolveLock(_ context.Context, req *kvrpcpb.ResolveLockR
 		}
 	}
 
-
 	err = server.storage.Write(req.GetContext(), txn.Writes())
 	if err != nil {
 		log.Errorf("KvResolveLock error:%s", err.Error())
@@ -368,11 +368,10 @@ func (server *Server) KvResolveLock(_ context.Context, req *kvrpcpb.ResolveLockR
 		//server.rollBack()
 		return &resp, nil
 	}
-	return nil, nil
+	return &resp, nil
 }
 
 func commit(txn *mvcc.MvccTxn, startTs uint64, commitTs uint64, k []byte) *kvrpcpb.KeyError {
-
 	write, commitTimeStamp, err := txn.MostRecentWrite(k)
 	if err != nil {
 		log.Errorf("KvCommit err:%v", err)
@@ -383,9 +382,7 @@ func commit(txn *mvcc.MvccTxn, startTs uint64, commitTs uint64, k []byte) *kvrpc
 	if write != nil {
 		if write.StartTS == startTs && commitTimeStamp == commitTs {
 			// 重复的 commit
-			return &kvrpcpb.KeyError{
-				Abort: err.Error(),
-			}
+			return nil
 		}
 		if commitTs < commitTimeStamp {
 			log.Fatalf("KvCommit has find newest commit:%+v old:%d", write, commitTimeStamp)
@@ -415,7 +412,6 @@ func commit(txn *mvcc.MvccTxn, startTs uint64, commitTs uint64, k []byte) *kvrpc
 		}}
 
 	}
-
 	// put write and del lock
 	txn.PutWrite(k, commitTs, &mvcc.Write{StartTS: startTs, Kind: lock.Kind})
 	txn.DeleteLock(k)
