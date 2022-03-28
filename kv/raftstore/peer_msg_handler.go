@@ -614,6 +614,11 @@ func (d *peerMsgHandler) onApproximateRegionSize(size uint64) {
 	d.ApproximateSize = &size
 }
 
+func (d *peerMsgHandler) addSizeDiffHint(key []byte, value []byte) {
+	size := len(key) + len(value)
+	d.SizeDiffHint += uint64(size)
+}
+
 func (d *peerMsgHandler) onSchedulerHeartbeatTick() {
 	d.ticker.schedule(PeerTickSchedulerHeartbeat)
 

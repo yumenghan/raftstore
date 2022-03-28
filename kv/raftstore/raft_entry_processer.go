@@ -138,6 +138,7 @@ func (d *peerMsgHandler) applyCmd(req *RaftCmdRequestWrapper) {
 				return
 			}
 			wb.SetCF(putRequest.GetCf(), putRequest.GetKey(), putRequest.GetValue())
+			d.addSizeDiffHint(putRequest.GetKey(), putRequest.GetValue())
 			resp[i].Put = &raft_cmdpb.PutResponse{}
 		case raft_cmdpb.CmdType_Delete:
 			delRequest := r.GetDelete()

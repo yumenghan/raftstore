@@ -402,7 +402,7 @@ func commit(txn *mvcc.MvccTxn, startTs uint64, commitTs uint64, k []byte) *kvrpc
 			Abort: err.Error(),
 		}
 	}
-
+	// 防止被别的事务提交
 	if startTs != lock.Ts {
 		return &kvrpcpb.KeyError{Conflict: &kvrpcpb.WriteConflict{
 			StartTs:    lock.Ts,
