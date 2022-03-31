@@ -73,7 +73,24 @@ func TestProgressLeader2AB(t *testing.T) {
 }
 
 func TestLeaderElection2AA(t *testing.T) {
+	testLeaderElection(t, false)
+}
+
+func TestLeaderElectionPreVote2AA(t *testing.T) {
+	testLeaderElection(t, true)
+}
+
+func testLeaderElection(t *testing.T, prevote bool) {
 	var cfg func(*Config)
+	candState := StateCandidate
+	var candTerm uint64 = 1
+	cfg = func(config *Config) {
+		config.PreVote = prevote
+		if prevote {
+			candState = StatePreCandidate
+			candTerm = 0
+		}
+	}
 	tests := []struct {
 		*network
 		state   StateType
@@ -81,8 +98,8 @@ func TestLeaderElection2AA(t *testing.T) {
 	}{
 		{newNetworkWithConfig(cfg, nil, nil, nil), StateLeader, 1},
 		{newNetworkWithConfig(cfg, nil, nil, nopStepper), StateLeader, 1},
-		{newNetworkWithConfig(cfg, nil, nopStepper, nopStepper), StateCandidate, 1},
-		{newNetworkWithConfig(cfg, nil, nopStepper, nopStepper, nil), StateCandidate, 1},
+		{newNetworkWithConfig(cfg, nil, nopStepper, nopStepper), candState, candTerm},
+		{newNetworkWithConfig(cfg, nil, nopStepper, nopStepper, nil), candState, candTerm},
 		{newNetworkWithConfig(cfg, nil, nopStepper, nopStepper, nil, nil), StateLeader, 1},
 	}
 
@@ -97,12 +114,21 @@ func TestLeaderElection2AA(t *testing.T) {
 		}
 	}
 }
+func TestLeaderCycle2AA(t *testing.T) {
+	testLeaderCycle(t, false)
+}
+func TestLeaderCyclePreVote2AA(t *testing.T) {
+	testLeaderCycle(t, true)
+}
 
 // testLeaderCycle verifies that each node in a cluster can campaign
 // and be elected in turn. This ensures that elections work when not
 // starting from a clean slate (as they do in TestLeaderElection)
-func TestLeaderCycle2AA(t *testing.T) {
+func testLeaderCycle(t *testing.T, preVote bool) {
 	var cfg func(*Config)
+	cfg = func(config *Config) {
+		config.PreVote = preVote
+	}
 	n := newNetworkWithConfig(cfg, nil, nil, nil)
 	for campaignerID := uint64(1); campaignerID <= 3; campaignerID++ {
 		n.send(pb.Message{From: campaignerID, To: campaignerID, MsgType: pb.MessageType_MsgHup})

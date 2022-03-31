@@ -19,7 +19,6 @@ import (
 	"fmt"
 	"github.com/gogo/protobuf/sortkeys"
 	"github.com/pingcap-incubator/tinykv/log"
-	"github.com/pingcap-incubator/tinykv/scheduler/server"
 	"math/rand"
 
 	pb "github.com/pingcap-incubator/tinykv/proto/pkg/eraftpb"
@@ -85,6 +84,12 @@ type Config struct {
 	// Applied. If Applied is unset when restarting, raft might return previous
 	// applied entries. This is a very application dependent configuration.
 	Applied uint64
+
+	PreVote bool
+
+	// CheckQuorum specifies if the leader should check quorum activity. Leader
+	// steps down when quorum is not active for an electionTimeout.
+	CheckQuorum bool
 }
 
 func (c *Config) validate() error {
@@ -165,6 +170,10 @@ type Raft struct {
 	// value.
 	// (Used in 3A conf change)
 	PendingConfIndex uint64
+
+	preVote bool
+
+	checkQuorum bool
 }
 
 // newRaft return a raft peer with the given config
@@ -178,6 +187,8 @@ func newRaft(c *Config) *Raft {
 		State:            StateFollower,
 		electionTimeout:  c.ElectionTick,
 		heartbeatTimeout: c.HeartbeatTick,
+		preVote: c.PreVote,
+		checkQuorum: c.CheckQuorum,
 	}
 	// confState
 	hardState, confState, err := c.Storage.InitialState()
@@ -326,6 +337,12 @@ func (r *Raft) becomeCandidate() {
 	r.Vote = r.id
 }
 
+func (r *Raft) becomePreCandidate() {
+	r.State = StatePreCandidate
+	r.Lead = None
+	r.votes = map[uint64]bool{}
+}
+
 // becomeLeader transform this peer's state to leader
 func (r *Raft) becomeLeader() {
 	// Your Code Here (2A).
@@ -367,7 +384,7 @@ func (r *Raft) Step(m pb.Message) error {
 	case m.GetTerm() == 0:
 	case m.GetTerm() > r.Term:
 		if m.GetMsgType() == pb.MessageType_MsgRequestVote {
-			if r.Lead != None && r.electionElapsed < r.electionTimeout {
+			if r.checkQuorum && r.Lead != None && r.electionElapsed < r.electionTimeout {
 				// 能够正常接收 msg
 				// If a server receives a RequestVote request within the minimum election timeout
 				// of hearing from a current leader, it does not update its term or grant its vote
@@ -395,14 +412,14 @@ func (r *Raft) Step(m pb.Message) error {
 			r.send(pb.Message{From: r.id, To: m.GetFrom(), Term: r.Term, MsgType: pb.MessageType_MsgRequestVoteResponse, Reject: true})
 		} else {
 			// ignore
-			log.Infof("raft-%d ignored a message [%v] with lower term from %d [term: %d]", r.id, m.GetMsgType(), m.From, m.GetTerm())
+			log.Infof("raft-%d ignored a message [%v] with lower term from %d [term: %d] nowTerm [term: %d]", r.id, m.GetMsgType(), m.From, m.GetTerm(), r.Term)
 		}
 		return nil
 	}
 
 	switch m.MsgType {
 	case pb.MessageType_MsgHup:
-		//
+		r.handleMsgHup(r.preVote)
 		r.electionElapsed = 0
 	case pb.MessageType_MsgPreVote, pb.MessageType_MsgRequestVote:
 		if r.handleMsgRequestVote(m) {
@@ -431,20 +448,20 @@ func (r *Raft) Step(m pb.Message) error {
 				log.Warnf("raft-%d was not int raft group drop msg", r.id)
 				return nil
 			}
-			r.handleMsgHup(pb.Message{From: r.id, To: r.id, MsgType: pb.MessageType_MsgPropose})
+			r.handleMsgHup(false)
 		case pb.MessageType_MsgTransferLeader:
 			m.To = r.Lead
 			r.send(m)
 		}
 
-	case StateCandidate:
+	case StateCandidate, StatePreCandidate:
 		switch m.MsgType {
 		case pb.MessageType_MsgRequestVoteResponse, pb.MessageType_MsgPreVoteResp:
-			voteRes := r.pollQuorum(m)
+			voteRes := r.pollQuorum(m.GetFrom(), !m.GetReject())
 			switch voteRes {
 			case VoteWin:
-				if r.State ==  StatePreCandidate {
-					r.compaign()
+				if r.State == StatePreCandidate {
+					r.handleMsgHup(false)
 				} else {
 					r.becomeLeader()
 					r.broadcastAppend()
@@ -476,16 +493,29 @@ func (r *Raft) Step(m pb.Message) error {
 	return nil
 }
 
-func (r *Raft) handleMsgHup(m pb.Message) {
+func (r *Raft) handleMsgHup(preVote bool) {
+	if r.State == StateLeader {
+		return
+	}
+	// 如果当前还有 confchange 未被 apply 且 commit > apply
+	var voteMsg pb.MessageType
+	var term uint64
+	if preVote {
+		r.becomePreCandidate()
+		voteMsg = pb.MessageType_MsgPreVote
+		term = r.Term + 1
+	} else {
+		r.becomeCandidate()
+		voteMsg = pb.MessageType_MsgRequestVote
+		term = r.Term
+	}
 
-}
-
-func (r *Raft) compaign() {
-	r.becomeCandidate()
-	// 给自己投票
-	r.pollQuorum(m)
-	if len(r.Prs) == 1 {
-		r.becomeLeader()
+	if res := r.pollQuorum(r.id, true); res == VoteWin {
+		if preVote {
+			r.handleMsgHup(false)
+		} else {
+			r.becomeLeader()
+		}
 		return
 	}
 	logTerm, err := r.RaftLog.Term(r.RaftLog.LastIndex())
@@ -496,7 +526,7 @@ func (r *Raft) compaign() {
 		if id == r.id {
 			continue
 		}
-		r.send(pb.Message{From: r.id, Term: r.Term, To: id, MsgType: pb.MessageType_MsgRequestVote, LogTerm: logTerm, Index: r.RaftLog.LastIndex()})
+		r.send(pb.Message{From: r.id, Term: term, To: id, MsgType: voteMsg, LogTerm: logTerm, Index: r.RaftLog.LastIndex()})
 	}
 }
 
@@ -523,9 +553,9 @@ const (
 	VotePending VoteType = 3
 )
 
-func (r *Raft) pollQuorum(m pb.Message) VoteType {
+func (r *Raft) pollQuorum(id uint64, v bool) VoteType {
 	// 1.计算是否满足 quorum ; 三种状态 1、win  2、lost  3、pending
-	r.votes[m.GetFrom()] = !m.GetReject()
+	r.votes[id] = v
 	voteInfo := [2]int{}
 	missing := 0
 	for id := range r.Prs {

@@ -284,8 +284,8 @@ func (c *RaftCluster) processRegionHeartbeat(region *core.RegionInfo) error {
 	// check whether there is a region with the same id in local storage
 	searchRegion := c.GetRegion(region.GetID())
 	if searchRegion != nil {
-		// check epoch
-		if !c.checkRegionEpoch(searchRegion.GetRegionEpoch(), region.GetRegionEpoch()) {
+		// fake Region info, old region has newest RegionEpoch
+		if c.checkRegionStale(searchRegion.GetRegionEpoch(), region.GetRegionEpoch()) {
 			return ErrRegionIsStale(region.GetMeta(), searchRegion.GetMeta())
 		}
 		// need update
@@ -306,7 +306,7 @@ func (c *RaftCluster) processRegionHeartbeat(region *core.RegionInfo) error {
 
 	needUpdate := true
 	for _, scanRegion := range scanRegions {
-		if !c.checkRegionEpoch(scanRegion.GetRegionEpoch(), region.GetRegionEpoch()) {
+		if c.checkRegionStale(scanRegion.GetRegionEpoch(), region.GetRegionEpoch()) {
 			needUpdate = false
 			break
 		}
@@ -333,14 +333,14 @@ func (c *RaftCluster) updateStoreStatusLocked(id uint64) {
 	c.core.UpdateStoreStatus(id, leaderCount, regionCount, pendingPeerCount, leaderRegionSize, regionSize)
 }
 
-func (c *RaftCluster) checkRegionEpoch(old *metapb.RegionEpoch, new *metapb.RegionEpoch) bool {
+func (c *RaftCluster) checkRegionStale(old *metapb.RegionEpoch, new *metapb.RegionEpoch) bool {
 	if old.GetConfVer() > new.GetConfVer() {
-		return false
+		return true
 	}
 	if old.GetVersion() > new.GetVersion() {
-		return false
+		return true
 	}
-	return true
+	return false
 }
 
 func (c *RaftCluster) checkRegionNeedUpdate(orignRegion, newRegion *core.RegionInfo) bool {
