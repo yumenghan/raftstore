@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"github.com/gogo/protobuf/sortkeys"
 	"github.com/pingcap-incubator/tinykv/log"
+	"github.com/pingcap-incubator/tinykv/scheduler/server"
 	"math/rand"
 
 	pb "github.com/pingcap-incubator/tinykv/proto/pkg/eraftpb"
@@ -34,6 +35,7 @@ const (
 	StateFollower StateType = iota
 	StateCandidate
 	StateLeader
+	StatePreCandidate
 )
 
 var stmap = [...]string{
@@ -364,7 +366,19 @@ func (r *Raft) Step(m pb.Message) error {
 	switch {
 	case m.GetTerm() == 0:
 	case m.GetTerm() > r.Term:
+		if m.GetMsgType() == pb.MessageType_MsgRequestVote {
+			if r.Lead != None && r.electionElapsed < r.electionTimeout {
+				// 能够正常接收 msg
+				// If a server receives a RequestVote request within the minimum election timeout
+				// of hearing from a current leader, it does not update its term or grant its vote
+				log.Infof("raft-%d now leader:%d lease not expired", r.id, r.Lead)
+				return nil
+			}
+		}
 		switch {
+		// preVote stage never reset term
+		case m.GetMsgType() == pb.MessageType_MsgPreVote:
+		case m.GetMsgType() == pb.MessageType_MsgPreVoteResp && !m.Reject:
 		default:
 			// 如果 msg 的 term 较大 且当前是 app、 heartbeat、snap 消息， 不管当前 state 是啥， 直接转为 follower
 			if m.GetMsgType() == pb.MessageType_MsgAppend || m.GetMsgType() == pb.MessageType_MsgHeartbeat || m.GetMsgType() == pb.MessageType_MsgSnapshot {
@@ -377,14 +391,20 @@ func (r *Raft) Step(m pb.Message) error {
 	case m.GetTerm() < r.Term:
 		if m.GetMsgType() == pb.MessageType_MsgAppend {
 			r.send(pb.Message{From: r.id, To: m.GetFrom(), Term: r.Term, MsgType: pb.MessageType_MsgAppendResponse})
-		} else if m.GetMsgType() == pb.MessageType_MsgRequestVote {
+		} else if m.GetMsgType() == pb.MessageType_MsgPreVote {
 			r.send(pb.Message{From: r.id, To: m.GetFrom(), Term: r.Term, MsgType: pb.MessageType_MsgRequestVoteResponse, Reject: true})
+		} else {
+			// ignore
+			log.Infof("raft-%d ignored a message [%v] with lower term from %d [term: %d]", r.id, m.GetMsgType(), m.From, m.GetTerm())
 		}
 		return nil
 	}
 
 	switch m.MsgType {
-	case pb.MessageType_MsgRequestVote:
+	case pb.MessageType_MsgHup:
+		//
+		r.electionElapsed = 0
+	case pb.MessageType_MsgPreVote, pb.MessageType_MsgRequestVote:
 		if r.handleMsgRequestVote(m) {
 			r.electionElapsed = 0
 		}
@@ -393,10 +413,6 @@ func (r *Raft) Step(m pb.Message) error {
 	switch r.State {
 	case StateFollower:
 		switch m.MsgType {
-		case pb.MessageType_MsgHup:
-			r.electionElapsed = 0
-			r.handleMsgHup(m)
-		case pb.MessageType_MsgRequestVote:
 		case pb.MessageType_MsgAppend:
 			r.electionElapsed = 0
 			r.Lead = m.GetFrom()
@@ -423,17 +439,19 @@ func (r *Raft) Step(m pb.Message) error {
 
 	case StateCandidate:
 		switch m.MsgType {
-		case pb.MessageType_MsgRequestVoteResponse:
+		case pb.MessageType_MsgRequestVoteResponse, pb.MessageType_MsgPreVoteResp:
 			voteRes := r.pollQuorum(m)
 			switch voteRes {
 			case VoteWin:
-				r.becomeLeader()
-				r.broadcastAppend()
+				if r.State ==  StatePreCandidate {
+					r.compaign()
+				} else {
+					r.becomeLeader()
+					r.broadcastAppend()
+				}
 			case VoteLost:
 				r.becomeFollower(r.Term, None)
 			}
-		case pb.MessageType_MsgHup:
-			r.handleMsgHup(m)
 		case pb.MessageType_MsgAppend:
 			r.becomeFollower(m.GetTerm(), m.GetFrom())
 			r.handleAppendEntries(m)
@@ -459,6 +477,10 @@ func (r *Raft) Step(m pb.Message) error {
 }
 
 func (r *Raft) handleMsgHup(m pb.Message) {
+
+}
+
+func (r *Raft) compaign() {
 	r.becomeCandidate()
 	// 给自己投票
 	r.pollQuorum(m)
@@ -466,7 +488,6 @@ func (r *Raft) handleMsgHup(m pb.Message) {
 		r.becomeLeader()
 		return
 	}
-
 	logTerm, err := r.RaftLog.Term(r.RaftLog.LastIndex())
 	if err != nil {
 		// todo
@@ -484,14 +505,13 @@ func (r *Raft) handleMsgRequestVote(m pb.Message) bool {
 	// 2. m.Term > r.Term
 	// 3. log 足够新
 	// 4. 投票消息丢失， candidate 重新请求 vote
-	// 5.
-	canVote := r.Vote == m.GetFrom() || (r.Vote == None && r.Lead == None) || (r.Vote == None && m.GetTerm() > r.Term)
+	canVote := r.Vote == m.GetFrom() || (r.Vote == None && r.Lead == None) || (m.MsgType == pb.MessageType_MsgPreVote && m.GetTerm() > r.Term)
 	if canVote && r.RaftLog.isUpToDate(m.GetIndex(), m.GetLogTerm()) {
 		r.Vote = m.GetFrom()
-		r.send(pb.Message{From: r.id, To: m.GetFrom(), Term: r.Term, MsgType: pb.MessageType_MsgRequestVoteResponse, Reject: false})
+		r.send(pb.Message{From: r.id, To: m.GetFrom(), Term: r.Term, MsgType: voteRespMsgType(m.GetMsgType()), Reject: false})
 		return true
 	}
-	r.send(pb.Message{From: r.id, To: m.GetFrom(), Term: r.Term, MsgType: pb.MessageType_MsgRequestVoteResponse, Reject: true})
+	r.send(pb.Message{From: r.id, To: m.GetFrom(), Term: r.Term, MsgType: voteRespMsgType(m.GetMsgType()), Reject: true})
 	return false
 }
 

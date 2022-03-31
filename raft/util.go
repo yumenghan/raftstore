@@ -135,3 +135,14 @@ func isHardStateEmpty(a pb.HardState) bool {
 func isSoftStateEqual(a, b *SoftState) bool {
 	return a.Lead == b.Lead && a.RaftState == b.RaftState
 }
+
+func voteRespMsgType(msgt pb.MessageType) pb.MessageType {
+	switch msgt {
+	case pb.MessageType_MsgRequestVote:
+		return pb.MessageType_MsgRequestVoteResponse
+	case pb.MessageType_MsgPreVote:
+		return pb.MessageType_MsgPreVoteResp
+	default:
+		panic(fmt.Sprintf("not a vote message: %s", msgt))
+	}
+}
