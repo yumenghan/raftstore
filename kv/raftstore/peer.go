@@ -131,6 +131,8 @@ func NewPeer(storeId uint64, cfg *config.Config, engines *engine_util.Engines, r
 		HeartbeatTick: cfg.RaftHeartbeatTicks,
 		Applied:       appliedIndex,
 		Storage:       ps,
+		PreVote: true,
+		CheckQuorum: true,
 	}
 
 	raftGroup, err := raft.NewRawNode(raftCfg)
