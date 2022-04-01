@@ -35,6 +35,7 @@ const (
 	StateCandidate
 	StateLeader
 	StatePreCandidate
+	numState
 )
 
 var stmap = [...]string{
@@ -383,7 +384,7 @@ func (r *Raft) Step(m pb.Message) error {
 	switch {
 	case m.GetTerm() == 0:
 	case m.GetTerm() > r.Term:
-		if m.GetMsgType() == pb.MessageType_MsgRequestVote {
+		if m.GetMsgType() == pb.MessageType_MsgRequestVote || m.GetMsgType() == pb.MessageType_MsgPreVote {
 			if r.checkQuorum && r.Lead != None && r.electionElapsed < r.electionTimeout {
 				// 能够正常接收 msg
 				// If a server receives a RequestVote request within the minimum election timeout
@@ -406,7 +407,11 @@ func (r *Raft) Step(m pb.Message) error {
 			}
 		}
 	case m.GetTerm() < r.Term:
-		if m.GetMsgType() == pb.MessageType_MsgAppend {
+		if (r.checkQuorum || r.preVote) && (m.GetMsgType() == pb.MessageType_MsgHeartbeat || m.GetMsgType() == pb.MessageType_MsgAppend) {
+			// 我们从 leader 中收到一个更小的 term， 可能是消息在网络中延迟了，当前 node 推进 term 在网络分区中，并且现在他不能再赢得选举或者重新加入集群， 如果
+			// checkQuorum 是 false， 那么在回复 vote 时有更高的 term， 如果 checkQuorum 时 true，我们不会在 vote 回复中增加 term， 而是通过生成其他消息来 推进 term
+			// 这两个功能的最终结果是最大限度的减少从集群中移除的节点造成的中断， 移除的节点发送 vote ，消息将会被忽略，利用 MsgAppendResponse 迫使当前 leader 下台， 重新开始选举
+			// 通过新的选举来解放这个陷入困境的节点
 			r.send(pb.Message{From: r.id, To: m.GetFrom(), Term: r.Term, MsgType: pb.MessageType_MsgAppendResponse})
 		} else if m.GetMsgType() == pb.MessageType_MsgPreVote {
 			r.send(pb.Message{From: r.id, To: m.GetFrom(), Term: r.Term, MsgType: pb.MessageType_MsgRequestVoteResponse, Reject: true})
@@ -422,9 +427,7 @@ func (r *Raft) Step(m pb.Message) error {
 		r.handleMsgHup(r.preVote)
 		r.electionElapsed = 0
 	case pb.MessageType_MsgPreVote, pb.MessageType_MsgRequestVote:
-		if r.handleMsgRequestVote(m) {
-			r.electionElapsed = 0
-		}
+		r.handleMsgRequestVote(m)
 	}
 
 	switch r.State {
@@ -537,7 +540,10 @@ func (r *Raft) handleMsgRequestVote(m pb.Message) bool {
 	// 4. 投票消息丢失， candidate 重新请求 vote
 	canVote := r.Vote == m.GetFrom() || (r.Vote == None && r.Lead == None) || (m.MsgType == pb.MessageType_MsgPreVote && m.GetTerm() > r.Term)
 	if canVote && r.RaftLog.isUpToDate(m.GetIndex(), m.GetLogTerm()) {
-		r.Vote = m.GetFrom()
+		if m.GetMsgType() == pb.MessageType_MsgRequestVote {
+			r.Vote = m.GetFrom()
+			r.electionElapsed = 0
+		}
 		r.send(pb.Message{From: r.id, To: m.GetFrom(), Term: r.Term, MsgType: voteRespMsgType(m.GetMsgType()), Reject: false})
 		return true
 	}
