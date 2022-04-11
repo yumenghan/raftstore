@@ -132,6 +132,7 @@ func (rs *RaftStorage) Reader(ctx *kvrpcpb.Context) (storage.StorageReader, erro
 		}},
 	}
 	cb := message.NewCallback()
+	//
 	if err := rs.raftRouter.SendRaftCommand(request, cb); err != nil {
 		return nil, err
 	}
@@ -196,7 +197,7 @@ func (rs *RaftStorage) Start() error {
 	rs.snapWorker.Start(snapRunner)
 
 	raftClient := newRaftClient(cfg)
-	trans := NewServerTransport(raftClient, snapSender, rs.raftRouter, resolveSender)
+	trans := NewServerTransport(raftClient, snapSender, resolveSender)
 
 	rs.node = raftstore.NewNode(rs.raftSystem, rs.config, schedulerClient)
 	err = rs.node.Start(context.TODO(), rs.engines, trans, rs.snapManager)

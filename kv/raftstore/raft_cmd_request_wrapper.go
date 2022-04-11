@@ -7,20 +7,13 @@ import (
 )
 
 type RaftCmdRequestWrapper struct {
-	id  uint64
+	key  uint64
 	msg *raft_cmdpb.RaftCmdRequest
-}
-
-func NewRaftCmdRequestWrapper(msg *raft_cmdpb.RaftCmdRequest) *RaftCmdRequestWrapper {
-	return &RaftCmdRequestWrapper{
-		msg: msg,
-		id:  nextGenID(),
-	}
 }
 
 func (r *RaftCmdRequestWrapper) Marshal() ([]byte, error) {
 	buf := make([]byte, r.msg.Size()+8)
-	binary.BigEndian.PutUint64(buf[:8], r.id)
+	binary.BigEndian.PutUint64(buf[:8], r.key)
 	if _, err := r.msg.MarshalTo(buf[8:]); err != nil {
 		return nil, fmt.Errorf("msg marshal fail:%v", err)
 	}
@@ -33,21 +26,15 @@ func (r *RaftCmdRequestWrapper) Unmarshal(buf []byte) error {
 		return fmt.Errorf("msg unmarshal err:%v", err)
 	}
 	r.msg = &msg
-	r.id = binary.BigEndian.Uint64(buf[:8])
+	r.key = binary.BigEndian.Uint64(buf[:8])
 	return nil
 }
 
-func (r RaftCmdRequestWrapper) GetID() uint64 {
-	return r.id
+func (r RaftCmdRequestWrapper) GetKey() uint64 {
+	return r.key
 }
 
 func (r RaftCmdRequestWrapper) GetMsg() *raft_cmdpb.RaftCmdRequest {
 	return r.msg
 }
 
-var globalIDGenerator uint64
-
-func nextGenID() uint64 {
-	globalIDGenerator++
-	return globalIDGenerator
-}

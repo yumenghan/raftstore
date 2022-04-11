@@ -25,6 +25,27 @@ func (e *ErrRegionNotFound) Error() string {
 	return fmt.Sprintf("region %v is not found", e.RegionId)
 }
 
+type ErrTimeout struct {
+}
+
+func (e *ErrTimeout) Error() string {
+	return "ErrRequestTimeOut"
+}
+
+type ErrTerminated struct {
+}
+
+func (e *ErrTerminated) Error() string {
+	return "ErrRequestTerminated"
+}
+
+type ErrDropped struct {
+}
+
+func (e *ErrDropped) Error() string {
+	return "ErrRequestDropped"
+}
+
 type ErrKeyNotInRegion struct {
 	Key    []byte
 	Region *metapb.Region

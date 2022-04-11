@@ -130,12 +130,95 @@ func (d *peerMsgHandler) preProposeRaftCommand(req *raft_cmdpb.RaftCmdRequest) e
 	return err
 }
 
-func (d *peerMsgHandler) proposeRaftCommand(msg *raft_cmdpb.RaftCmdRequest, cb *message.Callback) {
-	err := d.preProposeRaftCommand(msg)
-	if err != nil {
-		cb.Done(ErrResp(err))
+func (d *peerMsgHandler) handleProposals() {
+	if entries := d.incomingProposals.get(false); len(entries) > 0 {
+		var proposeEntriesByte [][]byte
+		for _, entry := range entries {
+			if err := d.preProposeRaftCommand(entry.msg); err != nil {
+				d.pendingProposal.dropped(entry.GetKey(), err)
+				continue
+			}
+			entryByte, err := entry.Marshal()
+			if err != nil {
+				log.Errorf("[%v] peer requestWrapper marshal err:%v", d.Tag, err)
+				continue
+			}
+			proposeEntriesByte = append(proposeEntriesByte ,entryByte)
+		}
+		if err := d.RaftGroup.ProposeEntries(proposeEntriesByte); err != nil {
+			log.Errorf("[%v] peer propose request err:%v", d.Tag, err)
+		}
+	}
+}
+
+func (d *peerMsgHandler) handleConfigChange() {
+	if len(d.configChangeC) == 0 {
 		return
 	}
+	select {
+	case req, ok := <-d.configChangeC:
+		if !ok {
+			d.configChangeC = nil
+		} else {
+			if err := d.preProposeRaftCommand(req.data); err != nil {
+				d.pendingConfigChange.dropped(req.key, err)
+				return
+			}
+			adminRequest := req.data.GetAdminRequest()
+			peerData, err := adminRequest.GetChangePeer().GetPeer().Marshal()
+			if err != nil {
+				log.Errorf("[%v] peer proposeRaftCommand change peer marshal err:%v", d.Tag, err)
+				return
+			}
+			//todo handle del self
+			cc := eraftpb.ConfChange{
+				ChangeType: adminRequest.GetChangePeer().GetChangeType(),
+				NodeId:     adminRequest.GetChangePeer().GetPeer().GetId(),
+				Context:    peerData,
+			}
+			err = d.RaftGroup.ProposeConfChange(cc)
+			if err != nil {
+				log.Errorf("[%v] peer ProposeConfChange change peer err:%v", d.Tag, err)
+				return
+			}
+		}
+	default:
+		return
+	}
+	return
+}
+
+func (d *peerMsgHandler) handleLeaderTransfer() (bool, error) {
+	target, ok := d.pendingLeaderTransfer.get()
+	if ok {
+		if err := d.preProposeRaftCommand(target); err != nil {
+			d.pendingLeaderTransfer.dropped(err)
+			return !ok, nil
+		}
+		d.RaftGroup.TransferLeader(target.GetAdminRequest().GetTransferLeader().GetPeer().GetId())
+		resp := newCmdResp()
+		resp.AdminResponse = &raft_cmdpb.AdminResponse{CmdType: raft_cmdpb.AdminCmdType_TransferLeader, TransferLeader: &raft_cmdpb.TransferLeaderResponse{}}
+		d.pendingLeaderTransfer.apply(resp)
+	}
+	return ok, nil
+}
+
+func (d *peerMsgHandler) handleReadIndex() (bool, error) {
+	if reqs := d.incomingReadIndexes.get(); len(reqs) > 0 {
+		for _, req := range reqs {
+			if d.preProposeRaftCommand()
+		}
+		ctx := d.pendingReadIndexes.nextCtx()
+		d.pendingReadIndexes.add(ctx, reqs)
+		if err := d.RaftGroup.ReadIndex(); err != nil {
+			return false, err
+		}
+		return true, nil
+	}
+	return false, nil
+}
+
+func (d *peerMsgHandler) proposeRaftCommand(msg *raft_cmdpb.RaftCmdRequest, cb *message.Callback) {
 	adminRequest := msg.GetAdminRequest()
 	if adminRequest != nil {
 		//handle admin
@@ -173,42 +256,8 @@ func (d *peerMsgHandler) proposeRaftCommand(msg *raft_cmdpb.RaftCmdRequest, cb *
 			resp.AdminResponse = &raft_cmdpb.AdminResponse{CmdType: raft_cmdpb.AdminCmdType_ChangePeer, ChangePeer: &raft_cmdpb.ChangePeerResponse{}}
 			cb.Done(resp)
 			return
-		case raft_cmdpb.AdminCmdType_TransferLeader:
-			d.RaftGroup.TransferLeader(adminRequest.GetTransferLeader().GetPeer().GetId())
-			resp := newCmdResp()
-			resp.AdminResponse = &raft_cmdpb.AdminResponse{CmdType: raft_cmdpb.AdminCmdType_TransferLeader, TransferLeader: &raft_cmdpb.TransferLeaderResponse{}}
-			cb.Done(resp)
-			return
 		}
 	}
-
-	requestWrapper := NewRaftCmdRequestWrapper(msg)
-	term := requestWrapper.GetMsg().GetHeader().GetTerm()
-	index := requestWrapper.GetID()
-
-	log.Debugf("[%v] peer proposeRaftCommand index:%d msg:%s", d.Tag, index, msg.String())
-	// cb record
-	d.peer.appendProposal(&proposal{
-		term:  term,
-		index: index,
-		cb:    cb,
-	})
-
-	reqBytes, err := requestWrapper.Marshal()
-	if err != nil {
-		log.Errorf("[%v] peer requestWrapper marshal err:%v", d.Tag, err)
-		d.peer.popProposal(index, term)
-		cb.Done(ErrResp(err))
-		return
-	}
-
-	if err := d.RaftGroup.Propose(reqBytes); err != nil {
-		log.Errorf("[%v] peer propose request err:%v", d.Tag, err)
-		d.peer.popProposal(index, term)
-		cb.Done(ErrResp(err))
-		return
-	}
-
 }
 
 func (d *peerMsgHandler) onTick() {

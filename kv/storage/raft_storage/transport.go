@@ -3,7 +3,6 @@ package raft_storage
 import (
 	"sync"
 
-	"github.com/pingcap-incubator/tinykv/kv/raftstore/message"
 	"github.com/pingcap-incubator/tinykv/kv/util/worker"
 	"github.com/pingcap-incubator/tinykv/log"
 	"github.com/pingcap-incubator/tinykv/proto/pkg/raft_serverpb"
@@ -11,16 +10,16 @@ import (
 
 type ServerTransport struct {
 	raftClient        *RaftClient
-	raftRouter        message.RaftRouter
+	//raftRouter        message.RaftRouter
 	resolverScheduler chan<- worker.Task
 	snapScheduler     chan<- worker.Task
 	resolving         sync.Map
 }
 
-func NewServerTransport(raftClient *RaftClient, snapScheduler chan<- worker.Task, raftRouter message.RaftRouter, resolverScheduler chan<- worker.Task) *ServerTransport {
+func NewServerTransport(raftClient *RaftClient, snapScheduler chan<- worker.Task, resolverScheduler chan<- worker.Task) *ServerTransport {
 	return &ServerTransport{
 		raftClient:        raftClient,
-		raftRouter:        raftRouter,
+		//raftRouter:        raftRouter,
 		resolverScheduler: resolverScheduler,
 		snapScheduler:     snapScheduler,
 	}

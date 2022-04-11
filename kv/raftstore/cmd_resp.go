@@ -42,6 +42,30 @@ func ErrRespStaleCommand(term uint64) *raft_cmdpb.RaftCmdResponse {
 	return ErrRespWithTerm(new(util.ErrStaleCommand), term)
 }
 
+func ErrRequestTimeout() *raft_cmdpb.RaftCmdResponse {
+	return &raft_cmdpb.RaftCmdResponse{
+		Header: &raft_cmdpb.RaftResponseHeader{
+			Error: util.RaftstoreErrToPbError(&util.ErrTimeout{}),
+		},
+	}
+}
+
+func ErrRequestTerminated() *raft_cmdpb.RaftCmdResponse {
+	return &raft_cmdpb.RaftCmdResponse{
+		Header: &raft_cmdpb.RaftResponseHeader{
+			Error: util.RaftstoreErrToPbError(&util.ErrTerminated{}),
+		},
+	}
+}
+
+func ErrRequestDropped() *raft_cmdpb.RaftCmdResponse {
+	return &raft_cmdpb.RaftCmdResponse{
+		Header: &raft_cmdpb.RaftResponseHeader{
+			Error: util.RaftstoreErrToPbError(&util.ErrDropped{}),
+		},
+	}
+}
+
 func ErrRespRegionNotFound(regionID uint64) *raft_cmdpb.RaftCmdResponse {
 	return &raft_cmdpb.RaftCmdResponse{
 		Header: &raft_cmdpb.RaftResponseHeader{

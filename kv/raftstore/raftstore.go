@@ -258,6 +258,7 @@ func (bs *Raftstore) start(
 		bs.router.register(peer)
 	}
 	bs.startWorkers(regionPeers)
+
 	return nil
 }
 

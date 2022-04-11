@@ -36,6 +36,9 @@ type Config struct {
 	// [b,c), [c,d) will be regionSplitSize (maybe a little larger).
 	RegionMaxSize   uint64
 	RegionSplitSize uint64
+
+	ExecShards uint32
+	ApplyShards uint32
 }
 
 func (c *Config) Validate() error {
@@ -78,6 +81,8 @@ func NewDefaultConfig() *Config {
 		RegionMaxSize:                       144 * MB,
 		RegionSplitSize:                     96 * MB,
 		DBPath:                              "/tmp/badger",
+		ExecShards: 16,
+		ApplyShards: 16,
 	}
 }
 

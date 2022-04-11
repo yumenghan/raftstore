@@ -2,6 +2,7 @@ package raftstore
 
 import (
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/pingcap-incubator/tinykv/kv/config"
@@ -56,13 +57,6 @@ func replicatePeer(storeID uint64, cfg *config.Config, sched chan<- worker.Task,
 	return NewPeer(storeID, cfg, engines, region, sched, metaPeer)
 }
 
-type proposal struct {
-	// index + term for unique identification
-	index uint64
-	term  uint64
-	cb    *message.Callback
-}
-
 type peer struct {
 	// The ticker of the peer, used to trigger
 	// * raft tick
@@ -83,7 +77,7 @@ type peer struct {
 
 	// Record the callback of the proposals
 	// (Used in 2B)
-	proposals []*proposal
+	//proposals []*proposal
 
 	// Index of last scheduled compacted raft log.
 	// (Used in 2C)
@@ -109,6 +103,16 @@ type peer struct {
 	// It's updated everytime the split checker scan the data
 	// (Used in 3B split)
 	ApproximateSize *uint64
+
+	incomingProposals *entryQueue
+	pendingProposal pendingProposal
+
+	configChangeC  <-chan configChangeRequest
+	pendingConfigChange   pendingConfigChange
+	pendingLeaderTransfer pendingLeaderTransfer
+
+	incomingReadIndexes *readIndexQueue
+	pendingReadIndexes pendingReadIndex
 }
 
 func NewPeer(storeId uint64, cfg *config.Config, engines *engine_util.Engines, region *metapb.Region, regionSched chan<- worker.Task,
@@ -135,6 +139,15 @@ func NewPeer(storeId uint64, cfg *config.Config, engines *engine_util.Engines, r
 		CheckQuorum: true,
 	}
 
+	pool := &sync.Pool{
+		New: func() interface{} {
+			return &RequestState{}
+		},
+	}
+	entryQ := newEntryQueue(10000, 3)
+	configChangeChan := make(chan configChangeRequest, 1)
+	incomingReadIndex := newReadIndexQueue(10000)
+
 	raftGroup, err := raft.NewRawNode(raftCfg)
 	if err != nil {
 		return nil, err
@@ -148,6 +161,13 @@ func NewPeer(storeId uint64, cfg *config.Config, engines *engine_util.Engines, r
 		PeersStartPendingTime: make(map[uint64]time.Time),
 		Tag:                   tag,
 		ticker:                newTicker(region.GetId(), cfg),
+		incomingProposals: entryQ,
+		pendingProposal: newPendingProposal(storeId, meta.GetId(), 16, pool, entryQ),
+		configChangeC: configChangeChan,
+		pendingConfigChange: newPendingConfigChange(configChangeChan),
+		pendingLeaderTransfer: newPendingLeaderTransfer(),
+		incomingReadIndexes: incomingReadIndex,
+		pendingReadIndexes: newPendingReadIndex(pool, incomingReadIndex),
 	}
 
 	// If this region has only one peer and I am the one, campaign directly.
@@ -225,10 +245,11 @@ func (p *peer) Destroy(engine *engine_util.Engines, keepData bool) error {
 		p.peerStorage.ClearData()
 	}
 
-	for _, proposal := range p.proposals {
-		NotifyReqRegionRemoved(region.Id, proposal.cb)
-	}
-	p.proposals = nil
+	p.pendingProposal.close()
+	//for _, proposal := range p.proposals {
+	//	NotifyReqRegionRemoved(region.Id, proposal.cb)
+	//}
+	//p.proposals = nil
 
 	log.Infof("%v destroy itself, takes %v", p.Tag, time.Now().Sub(start))
 	return nil
@@ -391,21 +412,6 @@ func (p *peer) sendRaftMessage(msg eraftpb.Message, trans Transport) error {
 	}
 	sendMsg.Message = &msg
 	return trans.Send(sendMsg)
-}
-
-func (p *peer) appendProposal(prop *proposal) {
-	p.proposals = append(p.proposals, prop)
-}
-
-func (p *peer) popProposal(index uint64, term uint64) *proposal {
-	for i, proposal := range p.proposals {
-		if proposal.index == index && proposal.term == term {
-			p.proposals[i] = p.proposals[len(p.proposals)-1]
-			p.proposals = p.proposals[:len(p.proposals)-1]
-			return proposal
-		}
-	}
-	return nil
 }
 
 type PeerSlice []*metapb.Peer
