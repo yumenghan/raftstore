@@ -175,6 +175,7 @@ func (d *peerMsgHandler) handleConfigChange() {
 				ChangeType: adminRequest.GetChangePeer().GetChangeType(),
 				NodeId:     adminRequest.GetChangePeer().GetPeer().GetId(),
 				Context:    peerData,
+				Key: req.key,
 			}
 			err = d.RaftGroup.ProposeConfChange(cc)
 			if err != nil {
@@ -205,12 +206,17 @@ func (d *peerMsgHandler) handleLeaderTransfer() (bool, error) {
 
 func (d *peerMsgHandler) handleReadIndex() (bool, error) {
 	if reqs := d.incomingReadIndexes.get(); len(reqs) > 0 {
+		var canPropReqs []*ReadIndexRequest
 		for _, req := range reqs {
-			if d.preProposeRaftCommand()
+			if err := d.preProposeRaftCommand(req.request); err != nil {
+				req.requestState.dropped(err)
+				continue
+			}
+			canPropReqs = append(canPropReqs, req)
 		}
 		ctx := d.pendingReadIndexes.nextCtx()
-		d.pendingReadIndexes.add(ctx, reqs)
-		if err := d.RaftGroup.ReadIndex(); err != nil {
+		d.pendingReadIndexes.add(ctx, canPropReqs)
+		if err := d.RaftGroup.ReadIndex(eraftpb.ReadIndexCtx{Id: ctx.id, Deadline: ctx.deadline}); err != nil {
 			return false, err
 		}
 		return true, nil

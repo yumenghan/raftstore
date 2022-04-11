@@ -85,7 +85,7 @@ func (d *peerMsgHandler) processNormal(entry eraftpb.Entry) {
 		log.Errorf("[%v] peer processNormal unmarshal requestWrapper err:%v", d.Tag, err)
 		return
 	}
-	log.Debugf("[%v] peer processNormal entry data len:%d index:%d msg:%s", d.Tag, len(entry.GetData()), req.GetID(), req.GetMsg().String())
+	log.Debugf("[%v] peer processNormal entry data len:%d index:%d msg:%s", d.Tag, len(entry.GetData()), req.key, req.GetMsg().String())
 	if isAdminRequest(req.GetMsg()) {
 		//todo handle adminRequest
 		switch req.GetMsg().GetAdminRequest().GetCmdType() {
@@ -101,11 +101,11 @@ func (d *peerMsgHandler) processNormal(entry eraftpb.Entry) {
 }
 
 func (d *peerMsgHandler) applyCmd(req *RaftCmdRequestWrapper) {
-	prop := d.popProposal(req.GetID(), req.GetMsg().GetHeader().GetTerm())
+	//prop := d.popProposal(req.GetID(), req.GetMsg().GetHeader().GetTerm())
 	var cb *message.Callback
-	if prop != nil {
-		cb = prop.cb
-	}
+	//if prop != nil {
+	//	cb = prop.cb
+	//}
 	//
 	err := util.CheckRegionEpoch(req.GetMsg(), d.Region(), true)
 	if err != nil {

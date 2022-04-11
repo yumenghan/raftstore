@@ -86,8 +86,8 @@ func (q *entryQueue) get(paused bool) []RaftCmdRequestWrapper {
 
 type readIndexQueue struct {
 	size        uint64
-	left        []*RaftCmdRequestWrapper
-	right       []*RaftCmdRequestWrapper
+	left        []*ReadIndexRequest
+	right       []*ReadIndexRequest
 	leftInWrite bool
 	stopped     bool
 	idx         uint64
@@ -97,8 +97,8 @@ type readIndexQueue struct {
 func newReadIndexQueue(size uint64) *readIndexQueue {
 	return &readIndexQueue{
 		size:  size,
-		left:  make([]*RaftCmdRequestWrapper, size),
-		right: make([]*RaftCmdRequestWrapper, size),
+		left:  make([]*ReadIndexRequest, size),
+		right: make([]*ReadIndexRequest, size),
 	}
 }
 
@@ -114,14 +114,14 @@ func (q *readIndexQueue) close() {
 	q.stopped = true
 }
 
-func (q *readIndexQueue) targetQueue() []*RaftCmdRequestWrapper {
+func (q *readIndexQueue) targetQueue() []*ReadIndexRequest {
 	if q.leftInWrite {
 		return q.left
 	}
 	return q.right
 }
 
-func (q *readIndexQueue) add(rs *RaftCmdRequestWrapper) (bool, bool) {
+func (q *readIndexQueue) add(rs *ReadIndexRequest) (bool, bool) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	if q.idx >= q.size {
@@ -136,7 +136,7 @@ func (q *readIndexQueue) add(rs *RaftCmdRequestWrapper) (bool, bool) {
 	return true, false
 }
 
-func (q *readIndexQueue) get() []*RaftCmdRequestWrapper {
+func (q *readIndexQueue) get() []*ReadIndexRequest {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	sz := q.idx

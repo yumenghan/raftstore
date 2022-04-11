@@ -144,8 +144,12 @@ func (rn *RawNode) ApplyConfChange(cc pb.ConfChange) *pb.ConfState {
 	return &pb.ConfState{Nodes: nodes(rn.Raft)}
 }
 
-func (rn *RawNode) ReadIndex() error {
-	//
+func (rn *RawNode) ReadIndex(m pb.ReadIndexCtx) error {
+	return rn.Raft.Step(pb.Message{
+		MsgType: pb.MessageType_MsgReadIndex,
+		Hint: m.Id,
+		HintHigh: m.Deadline,
+	})
 }
 // Step advances the state machine using the given message.
 func (rn *RawNode) Step(m pb.Message) error {

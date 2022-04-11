@@ -140,6 +140,9 @@ type Raft struct {
 	// msgs need to send
 	msgs []pb.Message
 
+	readyToRead  []pb.ReadyToRead
+	readIndex    *readIndex
+
 	// the leader id
 	Lead uint64
 
@@ -190,6 +193,7 @@ func newRaft(c *Config) *Raft {
 		heartbeatTimeout: c.HeartbeatTick,
 		preVote: c.PreVote,
 		checkQuorum: c.CheckQuorum,
+		readIndex: newReadIndex(),
 	}
 	// confState
 	hardState, confState, err := c.Storage.InitialState()
@@ -274,6 +278,10 @@ func (r *Raft) sendAppend(to uint64) bool {
 
 // sendHeartbeat sends a heartbeat RPC to the given peer.
 func (r *Raft) sendHeartbeat(to uint64) {
+	r.sendHeartbeatWithHint(to, pb.ReadIndexCtx{})
+}
+
+func (r *Raft) sendHeartbeatWithHint(to uint64, ctx pb.ReadIndexCtx) {
 	commit := min(r.Prs[to].Match, r.RaftLog.committed)
 	m := pb.Message{
 		From:    r.id,
@@ -281,8 +289,9 @@ func (r *Raft) sendHeartbeat(to uint64) {
 		MsgType: pb.MessageType_MsgHeartbeat,
 		Term:    r.Term,
 		Commit:  commit,
+		Hint: ctx.Id,
+		HintHigh: ctx.Deadline,
 	}
-
 	r.send(m)
 }
 
@@ -491,6 +500,8 @@ func (r *Raft) Step(m pb.Message) error {
 			r.handleMsgAppendResponse(m)
 		case pb.MessageType_MsgTransferLeader:
 			r.handleTransferLeader(m)
+		case pb.MessageType_MsgReadIndex:
+			r.handleReadIndex(m)
 		}
 	}
 	return nil
@@ -628,9 +639,34 @@ func (r *Raft) handleHeartbeat(m pb.Message) {
 }
 
 func (r *Raft) handleMsgHeartbeatResponse(m pb.Message) {
+	if m.GetHint() != 0 {
+		r.handleReadIndexLeaderConfirmation(m)
+	}
 	pr := r.Prs[m.GetFrom()]
 	if pr.Match < r.RaftLog.LastIndex() {
 		r.sendAppend(m.GetFrom())
+	}
+}
+
+func (r *Raft) handleReadIndexLeaderConfirmation(m pb.Message) {
+	ctx := pb.ReadIndexCtx{
+		Id:  m.Hint,
+		Deadline: m.HintHigh,
+	}
+	ris := r.readIndex.confirm(ctx, m.From, len(r.Prs) / 2)
+	for _, s := range ris {
+		if s.from == 0 || s.from == r.id {
+			r.addReadyToRead(s.index, s.ctx)
+		}
+			//} else {
+		//	r.send(pb.Message{
+		//		To:       s.from,
+		//		Type:     pb.ReadIndexResp,
+		//		LogIndex: s.index,
+		//		Hint:     m.Hint,
+		//		HintHigh: m.HintHigh,
+		//	})
+		//}
 	}
 }
 
@@ -832,6 +868,57 @@ func (r *Raft) handleTransferLeader(m pb.Message) {
 	// 满足条件可以直接发送
 	r.send(pb.Message{From: r.id, To: transferee, MsgType: pb.MessageType_MsgTimeoutNow, Term: r.Term})
 	r.leadTransferee = None
+}
+
+func (r *Raft) handleReadIndex(m pb.Message) {
+	ctx := pb.ReadIndexCtx{
+		Id: m.Hint,
+		Deadline:  m.HintHigh,
+	}
+	if len(r.Prs) > 1 {
+		if !r.hasCommittedEntryAtCurrentTerm() {
+			// leader doesn't know the commit value of the cluster
+			// see raft thesis section 6.4, this is the first step of the ReadIndex
+			// protocol.
+			log.Warningf("%s dropped ReadIndex, not ready", r.id)
+			// todo
+			//r.reportDroppedReadIndex(m)
+			return
+		}
+		r.readIndex.addRequest(r.RaftLog.committed, ctx, m.From)
+		for id := range r.Prs {
+			if id == r.id {
+				continue
+			}
+			r.sendHeartbeatWithHint(id, ctx)
+		}
+	} else {
+		r.addReadyToRead(r.RaftLog.committed, ctx)
+	}
+}
+
+func (r *Raft) hasCommittedEntryAtCurrentTerm() bool {
+	term, err := r.RaftLog.Term(r.RaftLog.committed)
+	if err != nil {
+		log.Errorf("raft-%d get committed %d term err %v", r.id, r.RaftLog.committed, err)
+		return false
+	}
+	if term == r.Term {
+		return true
+	}
+	return false
+}
+
+func (r *Raft) addReadyToRead(index uint64, ctx pb.ReadIndexCtx) {
+	r.readyToRead = append(r.readyToRead,
+		pb.ReadyToRead{
+			Index:     index,
+			Ctx: &ctx,
+		})
+}
+
+func (r *Raft) clearReadyToRead() {
+	r.readyToRead = r.readyToRead[:0]
 }
 
 // addNode add a new node to raft group

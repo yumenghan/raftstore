@@ -432,25 +432,30 @@ func (p *pendingLeaderTransfer) apply(result *raft_cmdpb.RaftCmdResponse) {
 	p.pending = nil
 }
 
-type readBatch struct {
-	index    uint64
-	requests []*RequestState
+type ReadIndexRequest struct {
+	request *raft_cmdpb.RaftCmdRequest
+	requestState *RequestState
 }
 
-type SystemCtx struct {
-	key uint64
-	deadLine uint64
+type readBatch struct {
+	index    uint64
+	requests []*ReadIndexRequest
+}
+
+type ReadIndexCtx struct {
+	id uint64
+	deadline uint64
 }
 
 type ReadyToRead struct {
 	Index     uint64
-	SystemCtx SystemCtx
+	ctx ReadIndexCtx
 }
 
 type pendingReadIndex struct {
 	mu       sync.Mutex
 	// used to apply
-	batches  map[SystemCtx]readBatch
+	batches  map[ReadIndexCtx]readBatch
 	requests *readIndexQueue
 	stopped  bool
 	pool     *sync.Pool
@@ -460,7 +465,7 @@ type pendingReadIndex struct {
 
 func newPendingReadIndex(pool *sync.Pool, r *readIndexQueue) pendingReadIndex {
 	return pendingReadIndex{
-		batches:      make(map[SystemCtx]readBatch),
+		batches:      make(map[ReadIndexCtx]readBatch),
 		requests:     r,
 		logicalClock: newLogicalClock(),
 		pool:         pool,
@@ -475,13 +480,13 @@ func (p *pendingReadIndex) close() {
 		p.requests.close()
 		reqs := p.requests.get()
 		for _, rec := range reqs {
-			rec.terminated()
+			rec.requestState.terminated()
 		}
 	}
 	for _, rb := range p.batches {
 		for _, req := range rb.requests {
-			if req != nil {
-				req.terminated()
+			if req.requestState != nil {
+				req.requestState.terminated()
 			}
 		}
 	}
@@ -496,7 +501,12 @@ func (p *pendingReadIndex) propose(cmd *message.MsgRaftCmd, timeoutTick uint64) 
 	req.deadline = p.getTick() + timeoutTick
 	req.cb = cmd.Callback
 
-	ok, closed := p.requests.add(req)
+	entry := &ReadIndexRequest{
+		request: cmd.Request,
+		requestState: req,
+	}
+
+	ok, closed := p.requests.add(entry)
 	if closed {
 		return nil, fmt.Errorf("peerIsClose")
 	}
@@ -506,15 +516,15 @@ func (p *pendingReadIndex) propose(cmd *message.MsgRaftCmd, timeoutTick uint64) 
 	return req, nil
 }
 
-func (p *pendingReadIndex) genCtx() SystemCtx {
+func (p *pendingReadIndex) genCtx() ReadIndexCtx {
 	p.keyG++
-	return SystemCtx{
-		key: p.keyG,
-		deadLine: p.getTick() + 30,
+	return ReadIndexCtx{
+		id: p.keyG,
+		deadline: p.getTick() + 30,
 	}
 }
 
-func (p *pendingReadIndex) nextCtx() SystemCtx {
+func (p *pendingReadIndex) nextCtx() ReadIndexCtx {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	return p.genCtx()
@@ -527,31 +537,31 @@ func (p *pendingReadIndex) addReady(reads []ReadyToRead) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	for _, v := range reads {
-		if rb, ok := p.batches[v.SystemCtx]; ok {
+		if rb, ok := p.batches[v.ctx]; ok {
 			rb.index = v.Index
-			p.batches[v.SystemCtx] = rb
+			p.batches[v.ctx] = rb
 		}
 	}
 }
 
-func (p *pendingReadIndex) add(sys SystemCtx, reqs []*RequestState) {
+func (p *pendingReadIndex) add(ctx ReadIndexCtx, reqs []*ReadIndexRequest) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if p.stopped {
 		return
 	}
-	if _, ok := p.batches[sys]; ok {
-		log.Panicf("same system ctx added again %v", sys)
+	if _, ok := p.batches[ctx]; ok {
+		log.Panicf("same system ctx added again %v", ctx)
 	} else {
-		rs := make([]*RequestState, len(reqs))
+		rs := make([]*ReadIndexRequest, len(reqs))
 		copy(rs, reqs)
-		p.batches[sys] = readBatch{
+		p.batches[ctx] = readBatch{
 			requests: rs,
 		}
 	}
 }
 
-func (p *pendingReadIndex) dropped(system SystemCtx, err error) {
+func (p *pendingReadIndex) dropped(system ReadIndexCtx, err error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if p.stopped {
@@ -560,35 +570,47 @@ func (p *pendingReadIndex) dropped(system SystemCtx, err error) {
 	if rb, ok := p.batches[system]; ok {
 		for _, req := range rb.requests {
 			if req != nil {
-				req.dropped(err)
+				req.requestState.dropped(err)
 			}
 		}
 		delete(p.batches, system)
 	}
 }
 
-func (p *pendingReadIndex) applied(applied uint64) {
+func (p *pendingReadIndex) getApply(applied uint64) []*ReadIndexRequest {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.stopped || len(p.batches) == 0 {
+		return nil
+	}
+	now := p.getTick()
+	var res []*ReadIndexRequest
+	for sys, rb := range p.batches {
+		if rb.index > 0 && rb.index <= applied {
+			for _, req := range rb.requests {
+				if req != nil {
+					if req.requestState.deadline > now {
+						res = append(res, req)
+					} else {
+						req.requestState.timeout()
+					}
+				}
+			}
+			delete(p.batches, sys)
+		}
+	}
+	return res
+}
+
+func (p *pendingReadIndex) applied(reqs []*ReadIndexRequest, resps []*raft_cmdpb.RaftCmdResponse) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if p.stopped || len(p.batches) == 0 {
 		return
 	}
 	now := p.getTick()
-	for sys, rb := range p.batches {
-		if rb.index > 0 && rb.index <= applied {
-			for _, req := range rb.requests {
-				if req != nil {
-					var v RequestResult
-					if req.deadline > now {
-						v.code = requestCompleted
-					} else {
-						v.code = requestTimeout
-					}
-					req.notify(v)
-				}
-			}
-			delete(p.batches, sys)
-		}
+	for i, req := range reqs {
+		req.requestState.notify(resps[i])
 	}
 	if now-p.lastGcTime < p.gcTick {
 		return
@@ -603,15 +625,15 @@ func (p *pendingReadIndex) gc(now uint64) {
 	}
 	for sys, rb := range p.batches {
 		for idx, req := range rb.requests {
-			if req != nil && req.deadline < now {
-				req.timeout()
+			if req != nil && req.requestState.deadline < now {
+				req.requestState.timeout()
 				rb.requests[idx] = nil
 				p.batches[sys] = rb
 			}
 		}
 	}
 	for sys, rb := range p.batches {
-		if sys.deadLine < now {
+		if sys.deadline < now {
 			empty := true
 			for _, req := range rb.requests {
 				if req != nil {

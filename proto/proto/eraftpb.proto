@@ -68,6 +68,7 @@ enum MessageType {
     MsgTimeoutNow = 12;
     MsgPreVote = 13;
     MsgPreVoteResp = 14;
+    MsgReadIndex = 15;
 }
 
 message Message {
@@ -81,6 +82,8 @@ message Message {
     uint64 commit = 8;
     Snapshot snapshot = 9;
     bool reject = 10;
+    uint64 hint = 11;
+    uint64 hint_high = 12;
 }
 
 // HardState contains the state of a node need to be peristed, including the current term, commit index 
@@ -109,4 +112,14 @@ message ConfChange {
     uint64 node_id = 2;
     bytes context = 3;
     uint64 key = 4;
+}
+
+message ReadIndexCtx {
+    uint64 id = 1;
+    uint64 deadline = 2;
+}
+
+message ReadyToRead {
+    ReadIndexCtx ctx = 1;
+    uint64 index = 2;
 }
