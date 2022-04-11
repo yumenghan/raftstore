@@ -99,11 +99,20 @@ func (rn *RawNode) Campaign() error {
 
 // Propose proposes data be appended to the raft log.
 func (rn *RawNode) Propose(data []byte) error {
-	ent := pb.Entry{Data: data}
+	return rn.ProposeEntries([][]byte{data})
+}
+
+func (rn *RawNode) ProposeEntries(data [][]byte) error {
+	ents := make([]*pb.Entry, len(data))
+	for i := range data {
+		ents[i] = &pb.Entry{
+			Data: data[i],
+		}
+	}
 	return rn.Raft.Step(pb.Message{
 		MsgType: pb.MessageType_MsgPropose,
 		From:    rn.Raft.id,
-		Entries: []*pb.Entry{&ent}})
+		Entries: ents})
 }
 
 // ProposeConfChange proposes a config change.
@@ -135,6 +144,9 @@ func (rn *RawNode) ApplyConfChange(cc pb.ConfChange) *pb.ConfState {
 	return &pb.ConfState{Nodes: nodes(rn.Raft)}
 }
 
+func (rn *RawNode) ReadIndex() error {
+	//
+}
 // Step advances the state machine using the given message.
 func (rn *RawNode) Step(m pb.Message) error {
 	// ignore unexpected local messages receiving over network

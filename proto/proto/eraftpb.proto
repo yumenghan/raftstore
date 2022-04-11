@@ -108,4 +108,5 @@ message ConfChange {
     // node will be add/remove
     uint64 node_id = 2;
     bytes context = 3;
+    uint64 key = 4;
 }
