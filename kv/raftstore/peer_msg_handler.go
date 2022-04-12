@@ -224,6 +224,16 @@ func (d *peerMsgHandler) handleReadIndex() (bool, error) {
 	return false, nil
 }
 
+func (d *peerMsgHandler) handleRaftMessages() (bool, error) {
+	msgs := d.pendingRaftMsgQueue.Get()
+	for _, m := range msgs {
+		if err := d.onRaftMsg(m); err != nil {
+			return false, err
+		}
+	}
+	return len(msgs) > 0, nil
+}
+
 func (d *peerMsgHandler) proposeRaftCommand(msg *raft_cmdpb.RaftCmdRequest, cb *message.Callback) {
 	adminRequest := msg.GetAdminRequest()
 	if adminRequest != nil {

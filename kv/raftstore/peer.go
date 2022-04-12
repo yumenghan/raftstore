@@ -113,6 +113,7 @@ type peer struct {
 
 	incomingReadIndexes *readIndexQueue
 	pendingReadIndexes pendingReadIndex
+	pendingRaftMsgQueue *MessageQueue
 }
 
 func NewPeer(storeId uint64, cfg *config.Config, engines *engine_util.Engines, region *metapb.Region, regionSched chan<- worker.Task,
@@ -168,6 +169,7 @@ func NewPeer(storeId uint64, cfg *config.Config, engines *engine_util.Engines, r
 		pendingLeaderTransfer: newPendingLeaderTransfer(),
 		incomingReadIndexes: incomingReadIndex,
 		pendingReadIndexes: newPendingReadIndex(pool, incomingReadIndex),
+		pendingRaftMsgQueue: NewMessageQueue(10000, 3),
 	}
 
 	// If this region has only one peer and I am the one, campaign directly.

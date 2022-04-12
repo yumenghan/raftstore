@@ -1,6 +1,7 @@
 package raftstore
 
 import (
+	rspb "github.com/pingcap-incubator/tinykv/proto/pkg/raft_serverpb"
 	"sync"
 )
 
@@ -143,5 +144,91 @@ func (q *readIndexQueue) get() []*ReadIndexRequest {
 	q.idx = 0
 	t := q.targetQueue()
 	q.leftInWrite = !q.leftInWrite
+	return t[:sz]
+}
+
+type MessageQueue struct {
+	left          []*rspb.RaftMessage
+	right         []*rspb.RaftMessage
+	cycle         uint64
+	size          uint64
+	lazyFreeCycle uint64
+	idx           uint64
+	oldIdx        uint64
+	mu            sync.Mutex
+	stopped       bool
+	leftInWrite   bool
+}
+
+// NewMessageQueue creates a new MessageQueue instance.
+func NewMessageQueue(size uint64, lazyFreeCycle uint64) *MessageQueue {
+	q := &MessageQueue{
+		size:          size,
+		lazyFreeCycle: lazyFreeCycle,
+		left:          make([]*rspb.RaftMessage, size),
+		right:         make([]*rspb.RaftMessage, size),
+	}
+	return q
+}
+
+// Close closes the queue so no further messages can be added.
+func (q *MessageQueue) Close() {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	q.stopped = true
+}
+
+func (q *MessageQueue) targetQueue() []*rspb.RaftMessage {
+	var t []*rspb.RaftMessage
+	if q.leftInWrite {
+		t = q.left
+	} else {
+		t = q.right
+	}
+	return t
+}
+
+// Add adds the specified message to the queue.
+func (q *MessageQueue) Add(msg *rspb.RaftMessage) (bool, bool) {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	if q.idx >= q.size {
+		return false, q.stopped
+	}
+	if q.stopped {
+		return false, true
+	}
+	w := q.targetQueue()
+	w[q.idx] = msg
+	q.idx++
+	return true, false
+}
+
+func (q *MessageQueue) gc() {
+	if q.lazyFreeCycle > 0 {
+		oldq := q.targetQueue()
+		if q.lazyFreeCycle == 1 {
+			for i := uint64(0); i < q.oldIdx; i++ {
+				oldq[i] = nil
+			}
+		} else if q.cycle%q.lazyFreeCycle == 0 {
+			for i := uint64(0); i < q.size; i++ {
+				oldq[i] = nil
+			}
+		}
+	}
+}
+
+// Get returns everything current in the queue.
+func (q *MessageQueue) Get() []*rspb.RaftMessage {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	q.cycle++
+	sz := q.idx
+	q.idx = 0
+	t := q.targetQueue()
+	q.leftInWrite = !q.leftInWrite
+	q.gc()
+	q.oldIdx = sz
 	return t[:sz]
 }

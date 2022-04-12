@@ -1,6 +1,7 @@
 package raftstore
 
 import (
+	"github.com/pingcap-incubator/tinykv/log"
 	"sync"
 	"sync/atomic"
 
@@ -20,7 +21,7 @@ type peerState struct {
 // router routes a message to a peer.
 type router struct {
 	peers       sync.Map // regionID -> peerState
-	peerSender  chan message.Msg
+	peerSender  chan message.Msg // 不再直接发送到 sender， dispatch 消息类型 发送到对应的 peer 队列
 	storeSender chan<- message.Msg
 }
 
@@ -63,6 +64,57 @@ func (pr *router) send(regionID uint64, msg message.Msg) error {
 	if p == nil || atomic.LoadUint32(&p.closed) == 1 {
 		return errPeerNotFound
 	}
+	peer := p.peer
+	// todo 封装到 peer 内执行
+	switch msg.Type {
+	case message.MsgTypeRaftMessage:
+		raftMsg := msg.Data.(*raft_serverpb.RaftMessage)
+		if ok, _ := peer.pendingRaftMsgQueue.Add(raftMsg); !ok {
+			log.Warnf("")
+		}
+	case message.MsgTypeRaftCmd:
+		raftCMD := msg.Data.(*message.MsgRaftCmd)
+		if adminReq := raftCMD.Request.GetAdminRequest(); adminReq != nil {
+			var err error
+			switch adminReq.GetCmdType() {
+			case raft_cmdpb.AdminCmdType_TransferLeader:
+				err = peer.pendingLeaderTransfer.propose(raftCMD)
+			case raft_cmdpb.AdminCmdType_ChangePeer:
+				_, err = peer.pendingConfigChange.propose(raftCMD, 1000)
+			}
+			if err != nil {
+				raftCMD.Callback.Done(ErrResp(err))
+			}
+			return nil
+		}
+		var err error
+		for _, req := range raftCMD.Request.GetRequests() {
+			switch req.GetCmdType() {
+			case raft_cmdpb.CmdType_Get, raft_cmdpb.CmdType_Snap:
+				_, err = peer.pendingReadIndexes.propose(raftCMD, 1000)
+			case raft_cmdpb.CmdType_Put, raft_cmdpb.CmdType_Delete:
+				_, err = peer.pendingProposal.propose(raftCMD, 1000)
+			}
+			if err != nil {
+				raftCMD.Callback.Done(ErrResp(err))
+			}
+		}
+		return nil
+	case message.MsgTypeTick:
+		//d.onTick()
+	case message.MsgTypeSplitRegion:
+		//split := msg.Data.(*message.MsgSplitRegion)
+		//log.Infof("%s on split with %v", d.Tag, split.SplitKey)
+		//d.onPrepareSplitRegion(split.RegionEpoch, split.SplitKey, split.Callback)
+	case message.MsgTypeRegionApproximateSize:
+		//d.onApproximateRegionSize(msg.Data.(uint64))
+	case message.MsgTypeGcSnap:
+		//gcSnap := msg.Data.(*message.MsgGCSnap)
+		//d.onGCSnap(gcSnap.Snaps)
+	case message.MsgTypeStart:
+		//d.startTicker()
+	}
+	// normal 消息暂时走原流程
 	pr.peerSender <- msg
 	return nil
 }
