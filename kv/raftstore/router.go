@@ -20,15 +20,17 @@ type peerState struct {
 
 // router routes a message to a peer.
 type router struct {
-	peers       sync.Map // regionID -> peerState
+	peers       sync.Map         // regionID -> peerState
 	peerSender  chan message.Msg // 不再直接发送到 sender， dispatch 消息类型 发送到对应的 peer 队列
 	storeSender chan<- message.Msg
+	partition   IPartitioner
 }
 
-func newRouter(storeSender chan<- message.Msg) *router {
+func newRouter(storeSender chan<- message.Msg, cnt uint64) *router {
 	pm := &router{
 		peerSender:  make(chan message.Msg, 40960),
 		storeSender: storeSender,
+		partition:   NewFixedPartitioner(cnt),
 	}
 	return pm
 }
@@ -70,12 +72,12 @@ func (pr *router) send(regionID uint64, msg message.Msg) error {
 	case message.MsgTypeRaftMessage:
 		raftMsg := msg.Data.(*raft_serverpb.RaftMessage)
 		if ok, _ := peer.pendingRaftMsgQueue.Add(raftMsg); !ok {
-			log.Warnf("")
+			log.Warnf("peer[%s] raft msg queue add fail", peer.Tag)
 		}
 	case message.MsgTypeRaftCmd:
 		raftCMD := msg.Data.(*message.MsgRaftCmd)
+		var err error
 		if adminReq := raftCMD.Request.GetAdminRequest(); adminReq != nil {
-			var err error
 			switch adminReq.GetCmdType() {
 			case raft_cmdpb.AdminCmdType_TransferLeader:
 				err = peer.pendingLeaderTransfer.propose(raftCMD)
@@ -87,7 +89,6 @@ func (pr *router) send(regionID uint64, msg message.Msg) error {
 			}
 			return nil
 		}
-		var err error
 		for _, req := range raftCMD.Request.GetRequests() {
 			switch req.GetCmdType() {
 			case raft_cmdpb.CmdType_Get, raft_cmdpb.CmdType_Snap:

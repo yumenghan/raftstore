@@ -31,9 +31,9 @@ func (p *logicalClock) getTick() uint64 {
 }
 
 type RequestState struct {
-	key            uint64
-	cb *message.Callback
-	deadline       uint64
+	key      uint64
+	cb       *message.Callback
+	deadline uint64
 }
 
 func (r *RequestState) timeout() {
@@ -49,7 +49,9 @@ func (r *RequestState) dropped(err error) {
 }
 
 func (r *RequestState) notify(result *raft_cmdpb.RaftCmdResponse) {
-	r.cb.Done(result)
+	if r.cb != nil {
+		r.cb.Done(result)
+	}
 }
 
 func (r *RequestState) Clear() {
@@ -78,23 +80,23 @@ func newKeyGenerator() *keyGenerator {
 }
 
 type proposalShard struct {
-	mu             sync.Mutex
-	proposals      *entryQueue
-	pending        map[uint64]*RequestState
-	pool           *sync.Pool
-	stopped        bool
-	storeId uint64
-	peerId uint64
+	mu        sync.Mutex
+	proposals *entryQueue
+	pending   map[uint64]*RequestState
+	pool      *sync.Pool
+	stopped   bool
+	storeId   uint64
+	peerId    uint64
 	logicalClock
 }
 
 func newPendingProposalShard(storeId uint64, peerId uint64, pool *sync.Pool, proposals *entryQueue) *proposalShard {
 	return &proposalShard{
-		storeId: storeId,
-		peerId: peerId,
-		pool: pool,
-		proposals: proposals,
-		pending: make(map[uint64]*RequestState),
+		storeId:      storeId,
+		peerId:       peerId,
+		pool:         pool,
+		proposals:    proposals,
+		pending:      make(map[uint64]*RequestState),
 		logicalClock: newLogicalClock(),
 	}
 }
@@ -207,7 +209,7 @@ type pendingProposal struct {
 	keyg   []*keyGenerator
 	// use index to choose generator
 	keygIndex uint64
-	ps     uint64
+	ps        uint64
 }
 
 func newPendingProposal(storeId, peerId uint64, pendingProposalShards uint64, pool *sync.Pool, proposals *entryQueue) pendingProposal {
@@ -271,10 +273,10 @@ type configChangeRequest struct {
 }
 
 type pendingConfigChange struct {
-	keyG uint64
-	mu           sync.Mutex
-	pending      *RequestState
-	confChangeC  chan<- configChangeRequest
+	keyG        uint64
+	mu          sync.Mutex
+	pending     *RequestState
+	confChangeC chan<- configChangeRequest
 	logicalClock
 }
 
@@ -323,9 +325,9 @@ func (p *pendingConfigChange) propose(cmd *message.MsgRaftCmd,
 	}
 	p.keyG++
 	req := &RequestState{
-		key:          ccreq.key,
-		deadline:     p.getTick() + timeoutTick,
-		cb: cmd.Callback,
+		key:      ccreq.key,
+		deadline: p.getTick() + timeoutTick,
+		cb:       cmd.Callback,
 	}
 	select {
 	case p.confChangeC <- ccreq:
@@ -378,8 +380,8 @@ func (p *pendingConfigChange) apply(key uint64, result *raft_cmdpb.RaftCmdRespon
 }
 
 type pendingLeaderTransfer struct {
-	mu sync.Mutex
-	pending *RequestState
+	mu              sync.Mutex
+	pending         *RequestState
 	leaderTransferC chan *raft_cmdpb.RaftCmdRequest
 }
 
@@ -400,7 +402,7 @@ func (p *pendingLeaderTransfer) propose(cmd *message.MsgRaftCmd) error {
 	defer p.mu.Unlock()
 	p.pending = &RequestState{
 		key: 0,
-		cb: cmd.Callback,
+		cb:  cmd.Callback,
 	}
 	select {
 	case p.leaderTransferC <- cmd.Request:
@@ -433,7 +435,7 @@ func (p *pendingLeaderTransfer) apply(result *raft_cmdpb.RaftCmdResponse) {
 }
 
 type ReadIndexRequest struct {
-	request *raft_cmdpb.RaftCmdRequest
+	request      *raft_cmdpb.RaftCmdRequest
 	requestState *RequestState
 }
 
@@ -443,17 +445,17 @@ type readBatch struct {
 }
 
 type ReadIndexCtx struct {
-	id uint64
+	id       uint64
 	deadline uint64
 }
 
 type ReadyToRead struct {
-	Index     uint64
-	ctx ReadIndexCtx
+	Index uint64
+	ctx   ReadIndexCtx
 }
 
 type pendingReadIndex struct {
-	mu       sync.Mutex
+	mu sync.Mutex
 	// used to apply
 	batches  map[ReadIndexCtx]readBatch
 	requests *readIndexQueue
@@ -502,7 +504,7 @@ func (p *pendingReadIndex) propose(cmd *message.MsgRaftCmd, timeoutTick uint64) 
 	req.cb = cmd.Callback
 
 	entry := &ReadIndexRequest{
-		request: cmd.Request,
+		request:      cmd.Request,
 		requestState: req,
 	}
 
@@ -519,7 +521,7 @@ func (p *pendingReadIndex) propose(cmd *message.MsgRaftCmd, timeoutTick uint64) 
 func (p *pendingReadIndex) genCtx() ReadIndexCtx {
 	p.keyG++
 	return ReadIndexCtx{
-		id: p.keyG,
+		id:       p.keyG,
 		deadline: p.getTick() + 30,
 	}
 }

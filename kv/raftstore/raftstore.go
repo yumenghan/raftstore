@@ -98,6 +98,8 @@ type GlobalContext struct {
 	splitCheckTaskSender chan<- worker.Task
 	schedulerClient      scheduler_client.Client
 	tickDriverSender     chan uint64
+	proposeWorkerReady   *workReady
+	applyWorkerReady     *workReady
 }
 
 type Transport interface {
@@ -248,6 +250,8 @@ func (bs *Raftstore) start(
 		raftLogGCTaskSender:  bs.workers.raftLogGCWorker.Sender(),
 		schedulerClient:      schedulerClient,
 		tickDriverSender:     bs.tickDriver.newRegionCh,
+		proposeWorkerReady:   newWorkReady(cfg.ExecShards),
+		applyWorkerReady:     newWorkReady(cfg.ApplyShards),
 	}
 	regionPeers, err := bs.loadPeers()
 	if err != nil {
@@ -278,11 +282,142 @@ func (bs *Raftstore) startWorkers(peers []*peer) {
 	}
 	engines := ctx.engine
 	cfg := ctx.cfg
+
+	// proposeWorker
+	for i := uint64(1); i <= ctx.cfg.ExecShards; i++ {
+		go bs.proposeWorker(i, bs.closeCh)
+	}
+
+	// applyWorker
+	for i := uint64(1); i <= ctx.cfg.ApplyShards; i++ {
+		go bs.applyWorker(i, bs.closeCh)
+	}
 	workers.splitCheckWorker.Start(runner.NewSplitCheckHandler(engines.Kv, NewRaftstoreRouter(router), cfg))
 	workers.regionWorker.Start(runner.NewRegionTaskHandler(engines, ctx.snapMgr))
 	workers.raftLogGCWorker.Start(runner.NewRaftLogGCTaskHandler())
 	workers.schedulerWorker.Start(runner.NewSchedulerTaskHandler(ctx.store.Id, ctx.schedulerClient, NewRaftstoreRouter(router)))
 	go bs.tickDriver.run()
+}
+
+func (bs *Raftstore) proposeWorker(workerID uint64, stopC <-chan struct{}) {
+	ticker := time.NewTicker(3000 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-stopC:
+			//e.offloadNodeMap(nodes)
+			return
+		case <-ticker.C:
+			nodes, cci = e.loadStepNodes(workerID, cci, nodes)
+			a := make(map[uint64]struct{})
+			if err := e.processSteps(workerID, a, nodes, updates, stopC); err != nil {
+				panicNow(err)
+			}
+		case <-bs.ctx.proposeWorkerReady.waitCh(workerID):
+			if cci == 0 || len(nodes) == 0 {
+				nodes, cci = e.loadStepNodes(workerID, cci, nodes)
+			}
+			a := bs.ctx.proposeWorkerReady.getReadyMap(workerID)
+			if err := bs.processPropose(workerID, a, nodes, updates, stopC); err != nil {
+				panicNow(err)
+			}
+		}
+	}
+}
+
+func (bs *Raftstore) applyWorker(workerID uint64, stopC <-chan struct{}) {
+	ticker := time.NewTicker(3000 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-stopC:
+			//e.offloadNodeMap(nodes)
+			return
+		case <-ticker.C:
+			nodes, cci = e.loadApplyNodes(workerID, cci, nodes)
+			a := make(map[uint64]struct{})
+			if err := e.processApplies(a, nodes, batch, entries); err != nil {
+				panicNow(err)
+			}
+			count++
+			if count%200 == 0 {
+				batch = make([]rsm.Task, 0, taskBatchSize)
+				entries = make([]sm.Entry, 0, taskBatchSize)
+			}
+		case <-bs.ctx.applyWorkerReady.waitCh(workerID):
+			if cci == 0 || len(nodes) == 0 {
+				nodes, cci = e.loadStepNodes(workerID, cci, nodes)
+			}
+			readyPeer := bs.ctx.applyWorkerReady.getReadyMap(workerID)
+			if err := bs.processSteps(workerID, readyPeer, updates); err != nil {
+				panic(err)
+			}
+		}
+	}
+}
+
+func (bs *Raftstore) processPropose(workerID uint64,
+	readyPeers map[uint64]struct{}, nodeUpdates []pb.Update) error {
+	peers := bs.getPeers(workerID)
+	if len(readyPeers) == 0 {
+		for cid := range peers {
+			readyPeers[cid] = struct{}{}
+		}
+	}
+	nodeUpdates = nodeUpdates[:0]
+	for cid := range readyPeers {
+		peer, ok := peers[cid]
+		if !ok || peer.stopped {
+			continue
+		}
+
+		hasUpdate, err := newPeerMsgHandler(peer, bs.ctx).handleProposeMsg()
+		if err != nil {
+			return err
+		}
+		if hasUpdate {
+			nodeUpdates = append(nodeUpdates, ud)
+		}
+	}
+	if err := e.applySnapshotAndUpdate(nodeUpdates, nodes, true); err != nil {
+		return err
+	}
+	// see raft thesis section 10.2.1 on details why we send Replicate message
+	// before those entries are persisted to disk
+	for _, ud := range nodeUpdates {
+		node := nodes[ud.ClusterID]
+		node.sendReplicateMessages(ud)
+		node.processReadyToRead(ud)
+		node.processDroppedEntries(ud)
+		node.processDroppedReadIndexes(ud)
+	}
+	if err := e.logdb.SaveRaftState(nodeUpdates, workerID); err != nil {
+		return err
+	}
+	if err := e.onSnapshotSaved(nodeUpdates, nodes); err != nil {
+		return err
+	}
+	if err := e.applySnapshotAndUpdate(nodeUpdates, nodes, false); err != nil {
+		return err
+	}
+	for _, ud := range nodeUpdates {
+		node := nodes[ud.ClusterID]
+		if err := node.processRaftUpdate(ud); err != nil {
+			return err
+		}
+		e.processMoreCommittedEntries(ud)
+		node.commitRaftUpdate(ud)
+	}
+	if lazyFreeCycle > 0 {
+		resetNodeUpdate(nodeUpdates)
+	}
+	return nil
+}
+
+func (bs *Raftstore) getPeers(workerID uint64) map[uint64]*peer {
+	// 需要做缓存？
+	//
+	bs.router.get()
 }
 
 func (bs *Raftstore) shutDown() {

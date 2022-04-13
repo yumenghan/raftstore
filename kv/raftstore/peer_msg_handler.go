@@ -70,14 +70,6 @@ func (d *peerMsgHandler) HandleRaftReady() {
 
 func (d *peerMsgHandler) HandleMsg(msg message.Msg) {
 	switch msg.Type {
-	case message.MsgTypeRaftMessage:
-		raftMsg := msg.Data.(*rspb.RaftMessage)
-		if err := d.onRaftMsg(raftMsg); err != nil {
-			log.Errorf("%s handle raft message error %v", d.Tag, err)
-		}
-	case message.MsgTypeRaftCmd:
-		raftCMD := msg.Data.(*message.MsgRaftCmd)
-		d.proposeRaftCommand(raftCMD.Request, raftCMD.Callback)
 	case message.MsgTypeTick:
 		d.onTick()
 	case message.MsgTypeSplitRegion:
@@ -92,6 +84,42 @@ func (d *peerMsgHandler) HandleMsg(msg message.Msg) {
 	case message.MsgTypeStart:
 		d.startTicker()
 	}
+}
+
+func (d *peerMsgHandler) handleProposeMsg() (bool, error) {
+	index, err := d.handleReadIndex()
+	if err != nil {
+		return false, err
+	}
+	proposals, err := d.handleProposals()
+	if err != nil {
+		return false, err
+	}
+	change, err := d.handleConfigChange()
+	if err != nil {
+		return false, err
+	}
+	transfer, err := d.handleLeaderTransfer()
+	if err != nil {
+		return false, err
+	}
+
+	messages, err := d.handleRaftMessages()
+	if err != nil {
+		return false, err
+	}
+	// todo gc
+	d.gc()
+	return index || proposals || change || transfer || messages, nil
+}
+
+func (d *peerMsgHandler) gc() {
+	//	if d.gcTick != n.currentTick {
+	//		d.pendingProposal.gc()
+	//		d.pendingConfigChange.gc()
+	//		n.pendingSnapshot.gc()
+	//		n.gcTick = n.currentTick
+	//	}
 }
 
 func (d *peerMsgHandler) preProposeRaftCommand(req *raft_cmdpb.RaftCmdRequest) error {
@@ -130,7 +158,7 @@ func (d *peerMsgHandler) preProposeRaftCommand(req *raft_cmdpb.RaftCmdRequest) e
 	return err
 }
 
-func (d *peerMsgHandler) handleProposals() {
+func (d *peerMsgHandler) handleProposals() (bool, error) {
 	if entries := d.incomingProposals.get(false); len(entries) > 0 {
 		var proposeEntriesByte [][]byte
 		for _, entry := range entries {
@@ -143,17 +171,20 @@ func (d *peerMsgHandler) handleProposals() {
 				log.Errorf("[%v] peer requestWrapper marshal err:%v", d.Tag, err)
 				continue
 			}
-			proposeEntriesByte = append(proposeEntriesByte ,entryByte)
+			proposeEntriesByte = append(proposeEntriesByte, entryByte)
 		}
 		if err := d.RaftGroup.ProposeEntries(proposeEntriesByte); err != nil {
 			log.Errorf("[%v] peer propose request err:%v", d.Tag, err)
+			return false, err
 		}
+		return true, nil
 	}
+	return false, nil
 }
 
-func (d *peerMsgHandler) handleConfigChange() {
+func (d *peerMsgHandler) handleConfigChange() (bool, error) {
 	if len(d.configChangeC) == 0 {
-		return
+		return false, nil
 	}
 	select {
 	case req, ok := <-d.configChangeC:
@@ -162,31 +193,31 @@ func (d *peerMsgHandler) handleConfigChange() {
 		} else {
 			if err := d.preProposeRaftCommand(req.data); err != nil {
 				d.pendingConfigChange.dropped(req.key, err)
-				return
+				return false, err
 			}
 			adminRequest := req.data.GetAdminRequest()
 			peerData, err := adminRequest.GetChangePeer().GetPeer().Marshal()
 			if err != nil {
 				log.Errorf("[%v] peer proposeRaftCommand change peer marshal err:%v", d.Tag, err)
-				return
+				return false, err
 			}
 			//todo handle del self
 			cc := eraftpb.ConfChange{
 				ChangeType: adminRequest.GetChangePeer().GetChangeType(),
 				NodeId:     adminRequest.GetChangePeer().GetPeer().GetId(),
 				Context:    peerData,
-				Key: req.key,
+				Key:        req.key,
 			}
 			err = d.RaftGroup.ProposeConfChange(cc)
 			if err != nil {
 				log.Errorf("[%v] peer ProposeConfChange change peer err:%v", d.Tag, err)
-				return
+				return false, err
 			}
+			return true, nil
 		}
 	default:
-		return
 	}
-	return
+	return false, nil
 }
 
 func (d *peerMsgHandler) handleLeaderTransfer() (bool, error) {
@@ -605,7 +636,8 @@ func (d *peerMsgHandler) onRaftGCLogTick() {
 	// Create a compact log request and notify directly.
 	regionID := d.regionId
 	request := newCompactLogRequest(regionID, d.Meta, compactIdx, term)
-	d.proposeRaftCommand(request, nil)
+	// todo compactLog
+	//d.pendingProposal.propose(&message.MsgRaftCmd{Request: request}, 1000)
 }
 
 func (d *peerMsgHandler) onSplitRegionCheckTick() {
