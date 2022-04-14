@@ -376,7 +376,7 @@ func (bs *Raftstore) processPropose(workerID uint64,
 			return err
 		}
 		if hasUpdate {
-			nodeUpdates = append(nodeUpdates, ud)
+			//nodeUpdates = append(nodeUpdates, ud)
 		}
 	}
 	if err := e.applySnapshotAndUpdate(nodeUpdates, nodes, true); err != nil {

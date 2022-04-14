@@ -2,6 +2,7 @@ package raftstore
 
 import (
 	"github.com/pingcap-incubator/tinykv/log"
+	"github.com/pingcap-incubator/tinykv/proto/pkg/eraftpb"
 	"sync"
 	"sync/atomic"
 
@@ -102,7 +103,11 @@ func (pr *router) send(regionID uint64, msg message.Msg) error {
 		}
 		return nil
 	case message.MsgTypeTick:
-		//d.onTick()
+		// todo 改为 tick
+		raftMsg := &raft_serverpb.RaftMessage{Message: &eraftpb.Message{MsgType: eraftpb.MessageType_MsgHup}}
+		if ok, _ := peer.pendingRaftMsgQueue.Add(raftMsg); !ok {
+			log.Warnf("peer[%s] raft msg queue add fail", peer.Tag)
+		}
 	case message.MsgTypeSplitRegion:
 		//split := msg.Data.(*message.MsgSplitRegion)
 		//log.Infof("%s on split with %v", d.Tag, split.SplitKey)

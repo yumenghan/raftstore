@@ -70,8 +70,6 @@ func (d *peerMsgHandler) HandleRaftReady() {
 
 func (d *peerMsgHandler) HandleMsg(msg message.Msg) {
 	switch msg.Type {
-	case message.MsgTypeTick:
-		d.onTick()
 	case message.MsgTypeSplitRegion:
 		split := msg.Data.(*message.MsgSplitRegion)
 		log.Infof("%s on split with %v", d.Tag, split.SplitKey)
@@ -91,7 +89,7 @@ func (d *peerMsgHandler) handleProposeMsg() (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	proposals, err := d.handleProposals()
+	messages, err := d.handleRaftMessages()
 	if err != nil {
 		return false, err
 	}
@@ -99,12 +97,12 @@ func (d *peerMsgHandler) handleProposeMsg() (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	transfer, err := d.handleLeaderTransfer()
+	proposals, err := d.handleProposals()
 	if err != nil {
 		return false, err
 	}
 
-	messages, err := d.handleRaftMessages()
+	transfer, err := d.handleLeaderTransfer()
 	if err != nil {
 		return false, err
 	}
@@ -258,8 +256,15 @@ func (d *peerMsgHandler) handleReadIndex() (bool, error) {
 func (d *peerMsgHandler) handleRaftMessages() (bool, error) {
 	msgs := d.pendingRaftMsgQueue.Get()
 	for _, m := range msgs {
-		if err := d.onRaftMsg(m); err != nil {
-			return false, err
+		switch m.Message.MsgType {
+		//todo 判断是否 tick
+		case eraftpb.MessageType_MsgHup:
+			d.onTick()
+			continue
+		default:
+			if err := d.onRaftMsg(m); err != nil {
+				return false, err
+			}
 		}
 	}
 	return len(msgs) > 0, nil
@@ -636,8 +641,7 @@ func (d *peerMsgHandler) onRaftGCLogTick() {
 	// Create a compact log request and notify directly.
 	regionID := d.regionId
 	request := newCompactLogRequest(regionID, d.Meta, compactIdx, term)
-	// todo compactLog
-	//d.pendingProposal.propose(&message.MsgRaftCmd{Request: request}, 1000)
+	d.pendingProposal.propose(&message.MsgRaftCmd{Request: request}, 1000)
 }
 
 func (d *peerMsgHandler) onSplitRegionCheckTick() {
