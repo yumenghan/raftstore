@@ -65,6 +65,8 @@ type Ready struct {
 	// If it contains a MessageType_MsgSnapshot message, the application MUST report back to raft
 	// when the snapshot has been received or has failed by calling ReportSnapshot.
 	Messages []pb.Message
+
+	ReadyToRead []pb.ReadyToRead
 }
 
 // RawNode is a wrapper of Raft.
@@ -146,11 +148,12 @@ func (rn *RawNode) ApplyConfChange(cc pb.ConfChange) *pb.ConfState {
 
 func (rn *RawNode) ReadIndex(m pb.ReadIndexCtx) error {
 	return rn.Raft.Step(pb.Message{
-		MsgType: pb.MessageType_MsgReadIndex,
-		Hint: m.Id,
+		MsgType:  pb.MessageType_MsgReadIndex,
+		Hint:     m.Id,
 		HintHigh: m.Deadline,
 	})
 }
+
 // Step advances the state machine using the given message.
 func (rn *RawNode) Step(m pb.Message) error {
 	// ignore unexpected local messages receiving over network
@@ -170,6 +173,7 @@ func (rn *RawNode) Ready() Ready {
 		Entries:          rn.Raft.RaftLog.unstableEntries(),
 		CommittedEntries: rn.Raft.RaftLog.nextEnts(),
 		Messages:         rn.Raft.msgs,
+		ReadyToRead:      rn.Raft.readyToRead,
 	}
 	if rn.Raft.RaftLog.hasPendingSnapshot() {
 		res.Snapshot = *rn.Raft.RaftLog.pendingSnapshot
@@ -202,6 +206,9 @@ func (rn *RawNode) HasReady() bool {
 		return true
 	}
 	if len(r.msgs) > 0 || len(r.RaftLog.unstableEntries()) > 0 {
+		return true
+	}
+	if len(rn.Raft.readyToRead) > 0 {
 		return true
 	}
 	return false

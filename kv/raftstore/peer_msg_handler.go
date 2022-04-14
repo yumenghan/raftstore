@@ -33,14 +33,45 @@ type peerMsgHandler struct {
 	ctx *GlobalContext
 }
 
+type Ready struct {
+	peerID uint64
+	ready  raft.Ready
+}
+
 func newPeerMsgHandler(peer *peer, ctx *GlobalContext) *peerMsgHandler {
 	return &peerMsgHandler{
 		peer: peer,
 		ctx:  ctx,
 	}
 }
+func (d *peerMsgHandler) HandleRaftReady() (Ready, bool, error) {
+	hasMsg, err := d.handleProposeMsg()
+	if err != nil {
+		return Ready{}, false, err
+	}
+	if hasMsg {
+		if !d.RaftGroup.HasReady() {
+			return Ready{}, false, nil
+		}
+		return Ready{peerID: d.PeerId(), ready: d.RaftGroup.Ready()}, true, nil
+	}
+	return Ready{}, false, nil
+}
 
-func (d *peerMsgHandler) HandleRaftReady() {
+func (d *peerMsgHandler) SaveReadyState(ready Ready) error {
+	_, err := d.peerStorage.SaveReadyState(&ready.ready)
+	if err != nil {
+		log.Errorf("[%v] peer SaveReadyState err:%v", d.Tag, err)
+		return err
+	}
+	if ready.ready.Snapshot.GetMetadata() != nil {
+		d.ctx.storeMeta.regionRanges.ReplaceOrInsert(&regionItem{region: d.Region()})
+		d.ctx.storeMeta.setRegion(d.Region(), d.peer)
+	}
+	return nil
+}
+
+func (d *peerMsgHandler) HandleRaftReadyOld() {
 	if d.stopped {
 		return
 	}
@@ -258,7 +289,7 @@ func (d *peerMsgHandler) handleRaftMessages() (bool, error) {
 	for _, m := range msgs {
 		switch m.Message.MsgType {
 		//todo 判断是否 tick
-		case eraftpb.MessageType_MsgHup:
+		case eraftpb.MessageType_MsgTick:
 			d.onTick()
 			continue
 		default:

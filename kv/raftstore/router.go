@@ -25,6 +25,8 @@ type router struct {
 	peerSender  chan message.Msg // 不再直接发送到 sender， dispatch 消息类型 发送到对应的 peer 队列
 	storeSender chan<- message.Msg
 	partition   IPartitioner
+	mu          sync.RWMutex            // used for protected peersWorker
+	peersWorker map[uint64][]*peerState // worker -> peers
 }
 
 func newRouter(storeSender chan<- message.Msg, cnt uint64) *router {
@@ -44,12 +46,33 @@ func (pr *router) get(regionID uint64) *peerState {
 	return nil
 }
 
+func (pr *router) getAllPeer(workerID uint64) []*peerState {
+	pr.mu.RLock()
+	defer pr.mu.RUnlock()
+	return pr.peersWorker[workerID]
+}
+
 func (pr *router) register(peer *peer) {
 	id := peer.regionId
 	newPeer := &peerState{
 		peer: peer,
 	}
 	pr.peers.Store(id, newPeer)
+	workerId := pr.partition.GetPartitionID(peer.regionId)
+
+	pr.mu.Lock()
+	defer pr.mu.Unlock()
+	peers, ok := pr.peersWorker[workerId]
+	if !ok {
+		var newPeers []*peerState
+		newPeers = append(newPeers, &peerState{peer: peer})
+		pr.peersWorker[workerId] = newPeers
+		return
+	}
+	newPeers := make([]*peerState, len(peers)+1)
+	copy(newPeers, peers)
+	newPeers[len(newPeers)-1] = &peerState{peer: peer}
+	pr.peersWorker[workerId] = newPeers
 }
 
 func (pr *router) close(regionID uint64) {
@@ -58,6 +81,28 @@ func (pr *router) close(regionID uint64) {
 		ps := v.(*peerState)
 		atomic.StoreUint32(&ps.closed, 1)
 		pr.peers.Delete(regionID)
+
+		workerId := pr.partition.GetPartitionID(ps.peer.regionId)
+		pr.mu.Lock()
+		defer pr.mu.Unlock()
+		peers, ok := pr.peersWorker[workerId]
+		if !ok {
+			return
+		}
+		if len(peers) == 1 {
+			if peers[0].peer.PeerId() == ps.peer.PeerId() {
+				pr.peersWorker[workerId] = nil
+				return
+			}
+			return
+		}
+		newPeers := make([]*peerState, 0, len(peers)-1)
+		for _, p := range peers {
+			if p.peer.PeerId() != ps.peer.PeerId() {
+				newPeers = append(newPeers, p)
+			}
+		}
+		pr.peersWorker[workerId] = newPeers
 	}
 }
 
@@ -103,8 +148,7 @@ func (pr *router) send(regionID uint64, msg message.Msg) error {
 		}
 		return nil
 	case message.MsgTypeTick:
-		// todo 改为 tick
-		raftMsg := &raft_serverpb.RaftMessage{Message: &eraftpb.Message{MsgType: eraftpb.MessageType_MsgHup}}
+		raftMsg := &raft_serverpb.RaftMessage{Message: &eraftpb.Message{MsgType: eraftpb.MessageType_MsgTick}}
 		if ok, _ := peer.pendingRaftMsgQueue.Add(raftMsg); !ok {
 			log.Warnf("peer[%s] raft msg queue add fail", peer.Tag)
 		}

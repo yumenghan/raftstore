@@ -3,6 +3,7 @@ package raftstore
 import (
 	"bytes"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/Connor1996/badger"
@@ -357,29 +358,30 @@ func (bs *Raftstore) applyWorker(workerID uint64, stopC <-chan struct{}) {
 }
 
 func (bs *Raftstore) processPropose(workerID uint64,
-	readyPeers map[uint64]struct{}, nodeUpdates []pb.Update) error {
-	peers := bs.getPeers(workerID)
+	readyPeers map[uint64]struct{}, nodeUpdates []Ready) error {
+	peers := bs.router.getAllPeer(workerID)
 	if len(readyPeers) == 0 {
-		for cid := range peers {
-			readyPeers[cid] = struct{}{}
+		for _, p := range peers {
+			readyPeers[p.peer.PeerId()] = struct{}{}
 		}
 	}
 	nodeUpdates = nodeUpdates[:0]
-	for cid := range readyPeers {
-		peer, ok := peers[cid]
-		if !ok || peer.stopped {
+	var peerMsgHandlers []*peerMsgHandler
+	for _, p := range peers {
+		if _, ok := readyPeers[p.peer.PeerId()]; !ok || atomic.LoadUint32(&p.closed) == 1 {
 			continue
 		}
-
-		hasUpdate, err := newPeerMsgHandler(peer, bs.ctx).handleProposeMsg()
+		handler := newPeerMsgHandler(p.peer, bs.ctx)
+		ready, hasUpdate, err := handler.HandleRaftReady()
 		if err != nil {
 			return err
 		}
 		if hasUpdate {
-			//nodeUpdates = append(nodeUpdates, ud)
+			nodeUpdates = append(nodeUpdates, ready)
+			peerMsgHandlers = append(peerMsgHandlers, handler)
 		}
 	}
-	if err := e.applySnapshotAndUpdate(nodeUpdates, nodes, true); err != nil {
+	if err := bs.applySnapshotAndUpdate(nodeUpdates, peerMsgHandlers); err != nil {
 		return err
 	}
 	// see raft thesis section 10.2.1 on details why we send Replicate message
@@ -414,11 +416,15 @@ func (bs *Raftstore) processPropose(workerID uint64,
 	return nil
 }
 
-func (bs *Raftstore) getPeers(workerID uint64) map[uint64]*peer {
-	// 需要做缓存？
-	//
-	bs.router.get()
+func (bs *Raftstore) applySnapshotAndUpdate(readys []Ready, peers []*peerMsgHandler) error {
+	for i, ready := range readys {
+		if err := peers[i].SaveReadyState(ready); err != nil {
+			return err
+		}
+	}
+	return nil
 }
+
 
 func (bs *Raftstore) shutDown() {
 	close(bs.closeCh)
@@ -438,7 +444,7 @@ func (bs *Raftstore) shutDown() {
 
 func CreateRaftstore(cfg *config.Config) (*RaftstoreRouter, *Raftstore) {
 	storeSender, storeState := newStoreState(cfg)
-	router := newRouter(storeSender)
+	router := newRouter(storeSender, cfg.ExecShards)\
 	raftstore := &Raftstore{
 		router:     router,
 		storeState: storeState,
