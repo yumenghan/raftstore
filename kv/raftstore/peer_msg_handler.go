@@ -34,9 +34,9 @@ type peerMsgHandler struct {
 }
 
 type Ready struct {
-	peerID uint64
+	peerID   uint64
 	regionID uint64
-	ready  raft.Ready
+	ready    raft.Ready
 }
 
 func newPeerMsgHandler(peer *peer, ctx *GlobalContext) *peerMsgHandler {
@@ -92,7 +92,17 @@ func (d *peerMsgHandler) pushTask(rec Task, notify bool) {
 
 func (d *peerMsgHandler) processReadyToRead(ud Ready) {
 	if len(ud.ready.ReadyToRead) > 0 {
-		d.pendingReadIndexes.addReady(ud.ready.ReadyToRead)
+		readyToRead := make([]ReadyToRead, len(ud.ready.ReadyToRead))
+		for i, read := range ud.ready.ReadyToRead {
+			readyToRead[i] = ReadyToRead{
+				Index: read.GetIndex(),
+				ctx: ReadIndexCtx{
+					id:       read.GetCtx().GetId(),
+					deadline: read.GetCtx().GetDeadline(),
+				},
+			}
+		}
+		d.pendingReadIndexes.addReady(readyToRead)
 	}
 }
 
@@ -117,7 +127,7 @@ func (d *peerMsgHandler) HandleRaftReadyOld() {
 		d.ctx.storeMeta.setRegion(d.Region(), d.peer)
 	}
 
-	d.process(ready.CommittedEntries)
+	d.process()
 
 	d.sendRaftMsg(&ready)
 

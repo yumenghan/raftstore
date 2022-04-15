@@ -14,15 +14,72 @@ import (
 	"sort"
 )
 
-func (d *peerMsgHandler) process(entries []eraftpb.Entry) {
-	for _, entry := range entries {
-		switch entry.GetEntryType() {
-		case eraftpb.EntryType_EntryConfChange:
-			d.processConfChange(entry)
-		default:
-			d.processNormal(entry)
+func (d *peerMsgHandler) process() {
+	done := false
+	for !done {
+		task, ok := d.toApplyQ.Get()
+		if !ok {
+			done = true
+		}
+		for _, entry := range task.Entries {
+			switch entry.GetEntryType() {
+			case eraftpb.EntryType_EntryConfChange:
+				d.processConfChange(entry)
+			default:
+				d.processNormal(entry)
+			}
+			d.processReadIndex(entry.GetIndex())
 		}
 	}
+}
+
+func (d *peerMsgHandler) processReadIndex(applyIndex uint64) {
+	readIndexReq := d.pendingReadIndexes.getApply(applyIndex)
+	if len(readIndexReq) <= 0 {
+		return
+	}
+
+	resps := make([]*raft_cmdpb.RaftCmdResponse, len(readIndexReq))
+	for j, reqIndex := range readIndexReq {
+		if err := util.CheckRegionEpoch(reqIndex.request, d.Region(), true); err != nil {
+			log.Infof("[%v] peer applyCmd epoch has changed, prev epoch:%v epoch:%v", d.Tag, reqIndex.request.GetHeader().GetRegionEpoch(), d.Region().GetRegionEpoch())
+			resps[j] = ErrResp(err)
+			continue
+		}
+		resp := make([]*raft_cmdpb.Response, len(reqIndex.request.GetRequests()))
+		i := 0
+		var err error
+		for _, r := range reqIndex.request.GetRequests() {
+			switch r.CmdType {
+			case raft_cmdpb.CmdType_Get:
+				getRequest := r.GetGet()
+				if err = util.CheckKeyInRegion(getRequest.GetKey(), d.Region()); err != nil {
+					log.Warnf("[%v] peer checkKeyInRegion key [%v] not in region", d.Tag, string(getRequest.GetKey()))
+					break
+				}
+				value, err := engine_util.GetCF(d.ctx.engine.Kv, getRequest.GetCf(), getRequest.GetKey())
+				if err != nil {
+					log.Errorf("[%v] peer GetCF error:%s", d.Tag, err)
+					break
+				}
+				resp[i].Get = &raft_cmdpb.GetResponse{Value: value}
+				i++
+			case raft_cmdpb.CmdType_Snap:
+				reqIndex.requestState.cb.Txn = d.ctx.engine.Kv.NewTransaction(false)
+				resp[i].Snap = &raft_cmdpb.SnapResponse{Region: d.Region()}
+				i++
+			}
+		}
+		if i < len(resp) {
+			resps[j] = ErrResp(err)
+			continue
+		}
+		cmdResp := newCmdResp()
+		cmdResp.Header.CurrentTerm = reqIndex.request.GetHeader().GetTerm()
+		cmdResp.Responses = append(cmdResp.Responses, resp...)
+		resps[j] = cmdResp
+	}
+	d.pendingReadIndexes.applied(readIndexReq, resps)
 }
 
 func (d *peerMsgHandler) processConfChange(entry eraftpb.Entry) {
@@ -120,18 +177,6 @@ func (d *peerMsgHandler) applyCmd(req *RaftCmdRequestWrapper) {
 		resp[i] = &raft_cmdpb.Response{}
 		resp[i].CmdType = r.GetCmdType()
 		switch r.CmdType {
-		case raft_cmdpb.CmdType_Get:
-			getRequest := r.GetGet()
-			if !d.checkKeyInRegion(getRequest.Key, cb) {
-				return
-			}
-			value, err := engine_util.GetCF(d.ctx.engine.Kv, getRequest.GetCf(), getRequest.GetKey())
-			if err != nil {
-				log.Errorf("[%v] peer GetCF error:%s", d.Tag, err)
-				cb.Done(ErrResp(err))
-				return
-			}
-			resp[i].Get = &raft_cmdpb.GetResponse{Value: value}
 		case raft_cmdpb.CmdType_Put:
 			putRequest := r.GetPut()
 			if !d.checkKeyInRegion(putRequest.Key, cb) {
@@ -147,12 +192,6 @@ func (d *peerMsgHandler) applyCmd(req *RaftCmdRequestWrapper) {
 			}
 			wb.DeleteCF(delRequest.GetCf(), delRequest.GetKey())
 			resp[i].Delete = &raft_cmdpb.DeleteResponse{}
-		case raft_cmdpb.CmdType_Snap:
-			if cb == nil {
-				continue
-			}
-			cb.Txn = d.ctx.engine.Kv.NewTransaction(false)
-			resp[i].Snap = &raft_cmdpb.SnapResponse{Region: d.Region()}
 		default:
 			log.Warnf("[%v] peer apply cmd invalid type:%v", d.Tag, r.CmdType)
 		}
@@ -290,17 +329,17 @@ func (d *peerMsgHandler) createRegion(region *metapb.Region, splitRequest *raft_
 	peers := make([]*metapb.Peer, len(peerSlice))
 	for i, p := range peerSlice {
 		peers[i] = &metapb.Peer{
-			Id: newPeers[i],
+			Id:      newPeers[i],
 			StoreId: p.GetStoreId(),
 		}
 	}
 
 	// newRegion
 	splitRegion := &metapb.Region{
-		Id:          splitRequest.GetNewRegionId(),
-		StartKey:    splitRequest.GetSplitKey(),
-		EndKey:      region.GetEndKey(),
-		Peers:       peers,
+		Id:       splitRequest.GetNewRegionId(),
+		StartKey: splitRequest.GetSplitKey(),
+		EndKey:   region.GetEndKey(),
+		Peers:    peers,
 		RegionEpoch: &metapb.RegionEpoch{
 			Version: InitEpochVer,
 			ConfVer: InitEpochConfVer,
@@ -320,7 +359,6 @@ func (d *peerMsgHandler) createRegion(region *metapb.Region, splitRequest *raft_
 
 	raftwb.WriteToDB(d.ctx.engine.Raft)
 	kvwb.WriteToDB(d.ctx.engine.Kv)
-
 
 	kvwb.Reset()
 	// set origin region

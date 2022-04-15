@@ -303,7 +303,6 @@ func (bs *Raftstore) startWorkers(peers []*peer) {
 func (bs *Raftstore) proposeWorker(workerID uint64, stopC <-chan struct{}) {
 	ticker := time.NewTicker(3000 * time.Millisecond)
 	defer ticker.Stop()
-	updates := make([]Ready, 0)
 	for {
 		select {
 		case <-stopC:
@@ -311,12 +310,12 @@ func (bs *Raftstore) proposeWorker(workerID uint64, stopC <-chan struct{}) {
 			return
 		case <-ticker.C:
 			a := make(map[uint64]struct{})
-			if err := bs.processPropose(workerID, a,  updates); err != nil {
+			if err := bs.processPropose(workerID, a); err != nil {
 				panic(err)
 			}
 		case <-bs.ctx.proposeWorkerReady.waitCh(workerID):
 			a := bs.ctx.proposeWorkerReady.getReadyMap(workerID)
-			if err := bs.processPropose(workerID, a, updates); err != nil {
+			if err := bs.processPropose(workerID, a); err != nil {
 				panic(err)
 			}
 		}
@@ -344,22 +343,40 @@ func (bs *Raftstore) applyWorker(workerID uint64, stopC <-chan struct{}) {
 			}
 		case <-bs.ctx.applyWorkerReady.waitCh(workerID):
 			readyPeer := bs.ctx.applyWorkerReady.getReadyMap(workerID)
-			if err := bs.processPropose(workerID, readyPeer, updates); err != nil {
+			if err := bs.processApplies(workerID, readyPeer, updates); err != nil {
 				panic(err)
 			}
 		}
 	}
 }
 
-func (bs *Raftstore) processPropose(workerID uint64,
-	readyPeers map[uint64]struct{}, nodeUpdates []Ready) error {
+func (bs *Raftstore) processApplies(workerID uint64,
+	readyPeers map[uint64]struct{}, batch []rsm.Task, entries []sm.Entry) error {
 	peers := bs.router.getAllPeer(workerID)
 	if len(readyPeers) == 0 {
 		for _, p := range peers {
 			readyPeers[p.peer.PeerId()] = struct{}{}
 		}
 	}
-	nodeUpdates = nodeUpdates[:0]
+	for _, p := range peers {
+		if _, ok := readyPeers[p.peer.PeerId()]; !ok || atomic.LoadUint32(&p.closed) == 1 {
+			continue
+		}
+		handler := newPeerMsgHandler(p.peer, bs.ctx)
+		handler.process()
+	}
+	return nil
+}
+
+func (bs *Raftstore) processPropose(workerID uint64,
+	readyPeers map[uint64]struct{}) error {
+	peers := bs.router.getAllPeer(workerID)
+	if len(readyPeers) == 0 {
+		for _, p := range peers {
+			readyPeers[p.peer.PeerId()] = struct{}{}
+		}
+	}
+	var nodeUpdates []Ready
 	var peerMsgHandlers []*peerMsgHandler
 	for _, p := range peers {
 		if _, ok := readyPeers[p.peer.PeerId()]; !ok || atomic.LoadUint32(&p.closed) == 1 {
@@ -382,20 +399,9 @@ func (bs *Raftstore) processPropose(workerID uint64,
 	// before those entries are persisted to disk
 	for i, ud := range nodeUpdates {
 		peerMsgHandlers[i].sendRaftMsg(&ud.ready)
-		node.processReadyToRead(ud)
+		peerMsgHandlers[i].processReadyToRead(ud)
 		//node.processDroppedEntries(ud)
 		//node.processDroppedReadIndexes(ud)
-	}
-	for _, ud := range nodeUpdates {
-		node := nodes[ud.ClusterID]
-		if err := node.processRaftUpdate(ud); err != nil {
-			return err
-		}
-		e.processMoreCommittedEntries(ud)
-		node.commitRaftUpdate(ud)
-	}
-	if lazyFreeCycle > 0 {
-		resetNodeUpdate(nodeUpdates)
 	}
 	return nil
 }
