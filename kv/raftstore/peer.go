@@ -114,6 +114,7 @@ type peer struct {
 	incomingReadIndexes *readIndexQueue
 	pendingReadIndexes pendingReadIndex
 	pendingRaftMsgQueue *MessageQueue
+	toApplyQ            *TaskQueue
 }
 
 func NewPeer(storeId uint64, cfg *config.Config, engines *engine_util.Engines, region *metapb.Region, regionSched chan<- worker.Task,

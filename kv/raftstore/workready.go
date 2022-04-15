@@ -56,6 +56,24 @@ func (r *readyCluster) getReadyClusters() map[uint64]struct{} {
 	return v
 }
 
+type bitmap struct {
+	v uint64
+}
+
+func (b *bitmap) contains(v uint64) bool {
+	if v >= 64 {
+		panic("invalid v")
+	}
+	return b.v&(1<<v) > 0
+}
+
+func (b *bitmap) add(v uint64) {
+	if v >= 64 {
+		panic("invalid v")
+	}
+	b.v = b.v | (1 << v)
+}
+
 type workReady struct {
 	partitioner IPartitioner
 	maps        []*readyCluster
@@ -88,26 +106,25 @@ func (wr *workReady) notify(idx uint64) {
 	}
 }
 
-//
-//func (wr *workReady) clusterReadyByUpdates(updates []pb.Update) {
-//	var notified bitmap
-//	for _, ud := range updates {
-//		if len(ud.CommittedEntries) > 0 {
-//			idx := wr.partitioner.GetPartitionID(ud.ClusterID)
-//			readyMap := wr.maps[idx]
-//			readyMap.setClusterReady(ud.ClusterID)
-//		}
-//	}
-//	for _, ud := range updates {
-//		if len(ud.CommittedEntries) > 0 {
-//			idx := wr.partitioner.GetPartitionID(ud.ClusterID)
-//			if !notified.contains(idx) {
-//				notified.add(idx)
-//				wr.notify(idx)
-//			}
-//		}
-//	}
-//}
+func (wr *workReady) clusterReadyByUpdates(updates []Ready) {
+	var notified bitmap
+	for _, ud := range updates {
+		if len(ud.ready.CommittedEntries) > 0 {
+			idx := wr.partitioner.GetPartitionID(ud.regionID)
+			readyMap := wr.maps[idx]
+			readyMap.setClusterReady(ud.regionID)
+		}
+	}
+	for _, ud := range updates {
+		if len(ud.ready.CommittedEntries) > 0 {
+			idx := wr.partitioner.GetPartitionID(ud.regionID)
+			if !notified.contains(idx) {
+				notified.add(idx)
+				wr.notify(idx)
+			}
+		}
+	}
+}
 
 //func (wr *workReady) clusterReadyByMessageBatch(mb pb.MessageBatch) {
 //	var notified bitmap

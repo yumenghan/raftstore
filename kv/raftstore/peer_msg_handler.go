@@ -35,6 +35,7 @@ type peerMsgHandler struct {
 
 type Ready struct {
 	peerID uint64
+	regionID uint64
 	ready  raft.Ready
 }
 
@@ -53,7 +54,7 @@ func (d *peerMsgHandler) HandleRaftReady() (Ready, bool, error) {
 		if !d.RaftGroup.HasReady() {
 			return Ready{}, false, nil
 		}
-		return Ready{peerID: d.PeerId(), ready: d.RaftGroup.Ready()}, true, nil
+		return Ready{peerID: d.PeerId(), regionID: d.regionId, ready: d.RaftGroup.Ready()}, true, nil
 	}
 	return Ready{}, false, nil
 }
@@ -69,6 +70,30 @@ func (d *peerMsgHandler) SaveReadyState(ready Ready) error {
 		d.ctx.storeMeta.setRegion(d.Region(), d.peer)
 	}
 	return nil
+}
+
+func (d *peerMsgHandler) ApplyRaftUpdates(ud Ready) {
+	d.pushEntries(ud.ready.CommittedEntries)
+}
+
+func (d *peerMsgHandler) pushEntries(entries []eraftpb.Entry) {
+	if len(entries) == 0 {
+		return
+	}
+	d.pushTask(Task{Entries: entries}, false)
+}
+
+func (d *peerMsgHandler) pushTask(rec Task, notify bool) {
+	d.toApplyQ.Add(rec)
+	if notify {
+		d.ctx.applyWorkerReady.clusterReady(d.regionId)
+	}
+}
+
+func (d *peerMsgHandler) processReadyToRead(ud Ready) {
+	if len(ud.ready.ReadyToRead) > 0 {
+		d.pendingReadIndexes.addReady(ud.ready.ReadyToRead)
+	}
 }
 
 func (d *peerMsgHandler) HandleRaftReadyOld() {

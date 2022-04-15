@@ -187,7 +187,10 @@ func (rn *RawNode) Ready() Ready {
 	if res.SoftState != nil {
 		rn.prevSoftState = res.SoftState
 	}
-	rn.Raft.msgs = nil
+	if len(res.ReadyToRead) > 0 {
+		rn.Raft.clearReadyToRead()
+	}
+		rn.Raft.msgs = nil
 	return res
 }
 
