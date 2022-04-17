@@ -136,7 +136,6 @@ func (rs *RaftStorage) Reader(ctx *kvrpcpb.Context) (storage.StorageReader, erro
 	if err := rs.raftRouter.SendRaftCommand(request, cb); err != nil {
 		return nil, err
 	}
-
 	resp := cb.WaitResp()
 	if err := rs.checkResponse(resp, 1); err != nil {
 		if cb.Txn != nil {

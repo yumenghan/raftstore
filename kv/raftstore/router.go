@@ -13,6 +13,9 @@ import (
 	"github.com/pingcap/errors"
 )
 
+type signal interface {
+	workerReady(uint64)
+}
 // peerState contains the peer states that needs to run raft command and apply command.
 type peerState struct {
 	closed uint32
@@ -27,6 +30,7 @@ type router struct {
 	partition   IPartitioner
 	mu          sync.RWMutex            // used for protected peersWorker
 	peersWorker map[uint64][]*peerState // worker -> peers
+	signal      signal                  // used to signal worker
 }
 
 func newRouter(storeSender chan<- message.Msg, cnt uint64) *router {
@@ -34,6 +38,7 @@ func newRouter(storeSender chan<- message.Msg, cnt uint64) *router {
 		peerSender:  make(chan message.Msg, 40960),
 		storeSender: storeSender,
 		partition:   NewFixedPartitioner(cnt),
+		peersWorker: make(map[uint64][]*peerState),
 	}
 	return pm
 }
@@ -73,6 +78,10 @@ func (pr *router) register(peer *peer) {
 	copy(newPeers, peers)
 	newPeers[len(newPeers)-1] = &peerState{peer: peer}
 	pr.peersWorker[workerId] = newPeers
+}
+
+func (pr *router) registerSignal(s signal) {
+	pr.signal = s
 }
 
 func (pr *router) close(regionID uint64) {
@@ -119,6 +128,7 @@ func (pr *router) send(regionID uint64, msg message.Msg) error {
 		raftMsg := msg.Data.(*raft_serverpb.RaftMessage)
 		if ok, _ := peer.pendingRaftMsgQueue.Add(raftMsg); !ok {
 			log.Warnf("peer[%s] raft msg queue add fail", peer.Tag)
+			return nil
 		}
 	case message.MsgTypeRaftCmd:
 		raftCMD := msg.Data.(*message.MsgRaftCmd)
@@ -131,9 +141,10 @@ func (pr *router) send(regionID uint64, msg message.Msg) error {
 				_, err = peer.pendingConfigChange.propose(raftCMD, 1000)
 			}
 			if err != nil {
+				log.Warnf("peer[%s] raft admin msg queue add fail %v", peer.Tag, raftCMD.Request.String())
 				raftCMD.Callback.Done(ErrResp(err))
+				return nil
 			}
-			return nil
 		}
 		for _, req := range raftCMD.Request.GetRequests() {
 			switch req.GetCmdType() {
@@ -143,29 +154,23 @@ func (pr *router) send(regionID uint64, msg message.Msg) error {
 				_, err = peer.pendingProposal.propose(raftCMD, 1000)
 			}
 			if err != nil {
+				log.Warnf("peer[%s] raft normal msg queue add fail %v", peer.Tag, raftCMD.Request.String())
 				raftCMD.Callback.Done(ErrResp(err))
 			}
 		}
-		return nil
 	case message.MsgTypeTick:
 		raftMsg := &raft_serverpb.RaftMessage{Message: &eraftpb.Message{MsgType: eraftpb.MessageType_MsgTick}}
 		if ok, _ := peer.pendingRaftMsgQueue.Add(raftMsg); !ok {
 			log.Warnf("peer[%s] raft msg queue add fail", peer.Tag)
+			return nil
 		}
-	case message.MsgTypeSplitRegion:
-		//split := msg.Data.(*message.MsgSplitRegion)
-		//log.Infof("%s on split with %v", d.Tag, split.SplitKey)
-		//d.onPrepareSplitRegion(split.RegionEpoch, split.SplitKey, split.Callback)
-	case message.MsgTypeRegionApproximateSize:
-		//d.onApproximateRegionSize(msg.Data.(uint64))
-	case message.MsgTypeGcSnap:
-		//gcSnap := msg.Data.(*message.MsgGCSnap)
-		//d.onGCSnap(gcSnap.Snaps)
-	case message.MsgTypeStart:
-		//d.startTicker()
+	default:
+		// normal 消息暂时走原流程
+		pr.peerSender <- msg
+		return nil
 	}
-	// normal 消息暂时走原流程
-	pr.peerSender <- msg
+
+	pr.signal.workerReady(regionID)
 	return nil
 }
 

@@ -66,8 +66,10 @@ func (d *peerMsgHandler) SaveReadyState(ready Ready) error {
 		return err
 	}
 	if ready.ready.Snapshot.GetMetadata() != nil {
+		d.ctx.storeMeta.Lock()
 		d.ctx.storeMeta.regionRanges.ReplaceOrInsert(&regionItem{region: d.Region()})
 		d.ctx.storeMeta.setRegion(d.Region(), d.peer)
+		d.ctx.storeMeta.Unlock()
 	}
 	return nil
 }
@@ -123,8 +125,10 @@ func (d *peerMsgHandler) HandleRaftReadyOld() {
 		return
 	}
 	if ready.Snapshot.GetMetadata() != nil {
+		d.ctx.storeMeta.Lock()
 		d.ctx.storeMeta.regionRanges.ReplaceOrInsert(&regionItem{region: d.Region()})
 		d.ctx.storeMeta.setRegion(d.Region(), d.peer)
+		d.ctx.storeMeta.Unlock()
 	}
 
 	d.process()

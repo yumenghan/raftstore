@@ -262,6 +262,7 @@ func (bs *Raftstore) start(
 	for _, peer := range regionPeers {
 		bs.router.register(peer)
 	}
+	bs.router.registerSignal(bs)
 	bs.startWorkers(regionPeers)
 
 	return nil
@@ -331,19 +332,13 @@ func (bs *Raftstore) applyWorker(workerID uint64, stopC <-chan struct{}) {
 			//e.offloadNodeMap(nodes)
 			return
 		case <-ticker.C:
-			nodes, cci = e.loadApplyNodes(workerID, cci, nodes)
 			a := make(map[uint64]struct{})
-			if err := e.processApplies(a, nodes, batch, entries); err != nil {
+			if err := bs.processApplies(workerID, a); err != nil {
 				panic(err)
-			}
-			count++
-			if count%200 == 0 {
-				batch = make([]rsm.Task, 0, taskBatchSize)
-				entries = make([]sm.Entry, 0, taskBatchSize)
 			}
 		case <-bs.ctx.applyWorkerReady.waitCh(workerID):
 			readyPeer := bs.ctx.applyWorkerReady.getReadyMap(workerID)
-			if err := bs.processApplies(workerID, readyPeer, updates); err != nil {
+			if err := bs.processApplies(workerID, readyPeer); err != nil {
 				panic(err)
 			}
 		}
@@ -351,7 +346,7 @@ func (bs *Raftstore) applyWorker(workerID uint64, stopC <-chan struct{}) {
 }
 
 func (bs *Raftstore) processApplies(workerID uint64,
-	readyPeers map[uint64]struct{}, batch []rsm.Task, entries []sm.Entry) error {
+	readyPeers map[uint64]struct{}) error {
 	peers := bs.router.getAllPeer(workerID)
 	if len(readyPeers) == 0 {
 		for _, p := range peers {
@@ -392,29 +387,37 @@ func (bs *Raftstore) processPropose(workerID uint64,
 			peerMsgHandlers = append(peerMsgHandlers, handler)
 		}
 	}
-	if err := bs.saveReadyStateAndUpdate(nodeUpdates, peerMsgHandlers); err != nil {
-		return err
-	}
+
 	// see raft thesis section 10.2.1 on details why we send Replicate message
 	// before those entries are persisted to disk
 	for i, ud := range nodeUpdates {
-		peerMsgHandlers[i].sendRaftMsg(&ud.ready)
+		peerMsgHandlers[i].ApplyRaftUpdates(ud) // asynchronous apply
 		peerMsgHandlers[i].processReadyToRead(ud)
+		peerMsgHandlers[i].sendRaftMsg(&ud.ready) // todo follower can not append log parallel
 		//node.processDroppedEntries(ud)
 		//node.processDroppedReadIndexes(ud)
 	}
+	bs.setApplyReadyByUpdates(nodeUpdates)
+
+	if err := bs.saveReadyState(nodeUpdates, peerMsgHandlers); err != nil {
+		return err
+	}
+
 	return nil
 }
 
-func (bs *Raftstore) saveReadyStateAndUpdate(readys []Ready, peers []*peerMsgHandler) error {
+func (bs *Raftstore) saveReadyState(readys []Ready, peers []*peerMsgHandler) error {
 	for i, ready := range readys {
 		if err := peers[i].SaveReadyState(ready); err != nil {
 			return err
 		}
-		peers[i].ApplyRaftUpdates(ready)
+		peers[i].RaftGroup.Advance(ready.ready)
 	}
-	bs.setApplyReadyByUpdates(readys)
 	return nil
+}
+
+func (bs *Raftstore) workerReady(clusterID uint64) {
+	bs.ctx.proposeWorkerReady.clusterReady(clusterID)
 }
 
 func (bs *Raftstore) setApplyReadyByUpdates(updates []Ready) {
@@ -443,7 +446,7 @@ func (bs *Raftstore) shutDown() {
 
 func CreateRaftstore(cfg *config.Config) (*RaftstoreRouter, *Raftstore) {
 	storeSender, storeState := newStoreState(cfg)
-	router := newRouter(storeSender, cfg.ExecShards)\
+	router := newRouter(storeSender, cfg.ExecShards)
 	raftstore := &Raftstore{
 		router:     router,
 		storeState: storeState,

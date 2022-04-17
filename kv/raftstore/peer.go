@@ -163,14 +163,15 @@ func NewPeer(storeId uint64, cfg *config.Config, engines *engine_util.Engines, r
 		PeersStartPendingTime: make(map[uint64]time.Time),
 		Tag:                   tag,
 		ticker:                newTicker(region.GetId(), cfg),
-		incomingProposals: entryQ,
-		pendingProposal: newPendingProposal(storeId, meta.GetId(), 16, pool, entryQ),
-		configChangeC: configChangeChan,
-		pendingConfigChange: newPendingConfigChange(configChangeChan),
+		incomingProposals:     entryQ,
+		pendingProposal:       newPendingProposal(storeId, meta.GetId(), 16, pool, entryQ),
+		configChangeC:         configChangeChan,
+		pendingConfigChange:   newPendingConfigChange(configChangeChan),
 		pendingLeaderTransfer: newPendingLeaderTransfer(),
-		incomingReadIndexes: incomingReadIndex,
-		pendingReadIndexes: newPendingReadIndex(pool, incomingReadIndex),
-		pendingRaftMsgQueue: NewMessageQueue(10000, 3),
+		incomingReadIndexes:   incomingReadIndex,
+		pendingReadIndexes:    newPendingReadIndex(pool, incomingReadIndex),
+		pendingRaftMsgQueue:   NewMessageQueue(10000, 3),
+		toApplyQ:              NewTaskQueue(),
 	}
 
 	// If this region has only one peer and I am the one, campaign directly.

@@ -88,7 +88,7 @@ func NewDefaultConfig() *Config {
 
 func NewTestConfig() *Config {
 	return &Config{
-		LogLevel:                 "info",
+		LogLevel:                 "debug",
 		Raft:                     true,
 		RaftBaseTickInterval:     50 * time.Millisecond,
 		RaftHeartbeatTicks:       2,
@@ -102,5 +102,7 @@ func NewTestConfig() *Config {
 		RegionMaxSize:                       144 * MB,
 		RegionSplitSize:                     96 * MB,
 		DBPath:                              "/tmp/badger",
+		ExecShards:                          16,
+		ApplyShards:                         16,
 	}
 }

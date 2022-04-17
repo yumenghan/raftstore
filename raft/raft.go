@@ -220,7 +220,7 @@ func newRaft(c *Config) *Raft {
 	}
 
 	r.becomeFollower(r.Term, None)
-	log.Debugf("newRaft [%d] peers:[%v] term [%d] commit [%d] applied [%d] lastIndex: [%d]", r.id, c.peers, r.Term, r.RaftLog.committed, r.RaftLog.applied, r.RaftLog.LastIndex())
+	log.Debugf("newRaft [%d] c-peers:[%v] nodes[%v] term [%d] commit [%d] applied [%d] lastIndex: [%d]", r.id, c.peers, nodes, r.Term, r.RaftLog.committed, r.RaftLog.applied, r.RaftLog.LastIndex())
 	return r
 }
 
@@ -880,7 +880,7 @@ func (r *Raft) handleReadIndex(m pb.Message) {
 			// leader doesn't know the commit value of the cluster
 			// see raft thesis section 6.4, this is the first step of the ReadIndex
 			// protocol.
-			log.Warningf("%s dropped ReadIndex, not ready", r.id)
+			log.Warningf("raft-%d dropped ReadIndex, not ready", r.id)
 			// todo
 			//r.reportDroppedReadIndex(m)
 			return
