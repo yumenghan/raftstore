@@ -85,10 +85,10 @@ func newWorkReady(count uint64) *workReady {
 	wr := &workReady{
 		partitioner: NewFixedPartitioner(count),
 		count:       count,
-		maps:        make([]*readyCluster, count),
-		channels:    make([]chan struct{}, count),
+		maps:        make([]*readyCluster, count+1),
+		channels:    make([]chan struct{}, count+1),
 	}
-	for i := uint64(0); i < count; i++ {
+	for i := uint64(0); i <= count; i++ {
 		wr.channels[i] = make(chan struct{}, 1)
 		wr.maps[i] = newReadyCluster()
 	}
@@ -166,10 +166,10 @@ func (wr *workReady) clusterReady(clusterID uint64) {
 }
 
 func (wr *workReady) waitCh(workerID uint64) chan struct{} {
-	return wr.channels[workerID-1]
+	return wr.channels[workerID]
 }
 
 func (wr *workReady) getReadyMap(workerID uint64) map[uint64]struct{} {
-	readyMap := wr.maps[workerID-1]
+	readyMap := wr.maps[workerID]
 	return readyMap.getReadyClusters()
 }

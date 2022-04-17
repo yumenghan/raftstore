@@ -315,8 +315,8 @@ func (bs *Raftstore) proposeWorker(workerID uint64, stopC <-chan struct{}) {
 				panic(err)
 			}
 		case <-bs.ctx.proposeWorkerReady.waitCh(workerID):
-			a := bs.ctx.proposeWorkerReady.getReadyMap(workerID)
-			if err := bs.processPropose(workerID, a); err != nil {
+			readyRegions := bs.ctx.proposeWorkerReady.getReadyMap(workerID)
+			if err := bs.processPropose(workerID, readyRegions); err != nil {
 				panic(err)
 			}
 		}
@@ -337,8 +337,8 @@ func (bs *Raftstore) applyWorker(workerID uint64, stopC <-chan struct{}) {
 				panic(err)
 			}
 		case <-bs.ctx.applyWorkerReady.waitCh(workerID):
-			readyPeer := bs.ctx.applyWorkerReady.getReadyMap(workerID)
-			if err := bs.processApplies(workerID, readyPeer); err != nil {
+			readyRegions := bs.ctx.applyWorkerReady.getReadyMap(workerID)
+			if err := bs.processApplies(workerID, readyRegions); err != nil {
 				panic(err)
 			}
 		}
@@ -346,15 +346,25 @@ func (bs *Raftstore) applyWorker(workerID uint64, stopC <-chan struct{}) {
 }
 
 func (bs *Raftstore) processApplies(workerID uint64,
-	readyPeers map[uint64]struct{}) error {
-	peers := bs.router.getAllPeer(workerID)
-	if len(readyPeers) == 0 {
-		for _, p := range peers {
-			readyPeers[p.peer.PeerId()] = struct{}{}
+	readyRegions map[uint64]struct{}) error {
+	var peers []*peerState
+	if len(readyRegions) == 0 {
+		regions := bs.router.getAllRegions(workerID)
+		peers = make([]*peerState, len(regions))
+		for i, r := range regions {
+			peers[i] = bs.router.get(r)
+		}
+	} else {
+		i := 0
+		peers = make([]*peerState, len(readyRegions))
+		for r, _ := range readyRegions {
+			peers[i] = bs.router.get(r)
+			i++
 		}
 	}
+
 	for _, p := range peers {
-		if _, ok := readyPeers[p.peer.PeerId()]; !ok || atomic.LoadUint32(&p.closed) == 1 {
+		if atomic.LoadUint32(&p.closed) == 1 {
 			continue
 		}
 		handler := newPeerMsgHandler(p.peer, bs.ctx)
@@ -364,17 +374,27 @@ func (bs *Raftstore) processApplies(workerID uint64,
 }
 
 func (bs *Raftstore) processPropose(workerID uint64,
-	readyPeers map[uint64]struct{}) error {
-	peers := bs.router.getAllPeer(workerID)
-	if len(readyPeers) == 0 {
-		for _, p := range peers {
-			readyPeers[p.peer.PeerId()] = struct{}{}
+	readyRegions map[uint64]struct{}) error {
+	var peers []*peerState
+	if len(readyRegions) == 0 {
+		regions := bs.router.getAllRegions(workerID)
+		peers = make([]*peerState, len(regions))
+		for i, r := range regions {
+			peers[i] = bs.router.get(r)
+		}
+	} else {
+		i := 0
+		peers = make([]*peerState, len(readyRegions))
+		for r, _ := range readyRegions {
+			peers[i] = bs.router.get(r)
+			i++
 		}
 	}
+
 	var nodeUpdates []Ready
 	var peerMsgHandlers []*peerMsgHandler
 	for _, p := range peers {
-		if _, ok := readyPeers[p.peer.PeerId()]; !ok || atomic.LoadUint32(&p.closed) == 1 {
+		if atomic.LoadUint32(&p.closed) == 1 {
 			continue
 		}
 		handler := newPeerMsgHandler(p.peer, bs.ctx)

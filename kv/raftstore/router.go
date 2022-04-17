@@ -24,21 +24,21 @@ type peerState struct {
 
 // router routes a message to a peer.
 type router struct {
-	peers       sync.Map         // regionID -> peerState
-	peerSender  chan message.Msg // 不再直接发送到 sender， dispatch 消息类型 发送到对应的 peer 队列
-	storeSender chan<- message.Msg
-	partition   IPartitioner
-	mu          sync.RWMutex            // used for protected peersWorker
-	peersWorker map[uint64][]*peerState // worker -> peers
-	signal      signal                  // used to signal worker
+	peers         sync.Map         // regionID -> peerState
+	peerSender    chan message.Msg // 不再直接发送到 sender， dispatch 消息类型 发送到对应的 peer 队列
+	storeSender   chan<- message.Msg
+	partition     IPartitioner
+	mu            sync.RWMutex        // used for protected peersWorker
+	workerRegions map[uint64][]uint64 // worker -> regions
+	signal        signal              // used to signal worker
 }
 
 func newRouter(storeSender chan<- message.Msg, cnt uint64) *router {
 	pm := &router{
-		peerSender:  make(chan message.Msg, 40960),
-		storeSender: storeSender,
-		partition:   NewFixedPartitioner(cnt),
-		peersWorker: make(map[uint64][]*peerState),
+		peerSender:    make(chan message.Msg, 40960),
+		storeSender:   storeSender,
+		partition:     NewFixedPartitioner(cnt),
+		workerRegions: make(map[uint64][]uint64),
 	}
 	return pm
 }
@@ -51,10 +51,10 @@ func (pr *router) get(regionID uint64) *peerState {
 	return nil
 }
 
-func (pr *router) getAllPeer(workerID uint64) []*peerState {
+func (pr *router) getAllRegions(workerID uint64) []uint64 {
 	pr.mu.RLock()
 	defer pr.mu.RUnlock()
-	return pr.peersWorker[workerID]
+	return pr.workerRegions[workerID]
 }
 
 func (pr *router) register(peer *peer) {
@@ -67,17 +67,17 @@ func (pr *router) register(peer *peer) {
 
 	pr.mu.Lock()
 	defer pr.mu.Unlock()
-	peers, ok := pr.peersWorker[workerId]
+	peers, ok := pr.workerRegions[workerId]
 	if !ok {
-		var newPeers []*peerState
-		newPeers = append(newPeers, &peerState{peer: peer})
-		pr.peersWorker[workerId] = newPeers
+		var newRegions []uint64
+		newRegions = append(newRegions, id)
+		pr.workerRegions[workerId] = newRegions
 		return
 	}
-	newPeers := make([]*peerState, len(peers)+1)
+	newPeers := make([]uint64, len(peers)+1)
 	copy(newPeers, peers)
-	newPeers[len(newPeers)-1] = &peerState{peer: peer}
-	pr.peersWorker[workerId] = newPeers
+	newPeers[len(newPeers)-1] = id
+	pr.workerRegions[workerId] = newPeers
 }
 
 func (pr *router) registerSignal(s signal) {
@@ -94,24 +94,24 @@ func (pr *router) close(regionID uint64) {
 		workerId := pr.partition.GetPartitionID(ps.peer.regionId)
 		pr.mu.Lock()
 		defer pr.mu.Unlock()
-		peers, ok := pr.peersWorker[workerId]
+		regions, ok := pr.workerRegions[workerId]
 		if !ok {
 			return
 		}
-		if len(peers) == 1 {
-			if peers[0].peer.PeerId() == ps.peer.PeerId() {
-				pr.peersWorker[workerId] = nil
+		if len(regions) == 1 {
+			if regions[0] == regionID {
+				pr.workerRegions[workerId] = nil
 				return
 			}
 			return
 		}
-		newPeers := make([]*peerState, 0, len(peers)-1)
-		for _, p := range peers {
-			if p.peer.PeerId() != ps.peer.PeerId() {
-				newPeers = append(newPeers, p)
+		newRegions := make([]uint64, 0, len(regions)-1)
+		for _, region := range regions {
+			if region != regionID {
+				newRegions = append(newRegions, region)
 			}
 		}
-		pr.peersWorker[workerId] = newPeers
+		pr.workerRegions[workerId] = newRegions
 	}
 }
 
