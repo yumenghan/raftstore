@@ -307,7 +307,7 @@ func (bs *Raftstore) proposeWorker(workerID uint64, stopC <-chan struct{}) {
 	for {
 		select {
 		case <-stopC:
-			//e.offloadNodeMap(nodes)
+
 			return
 		case <-ticker.C:
 			a := make(map[uint64]struct{})
@@ -329,7 +329,7 @@ func (bs *Raftstore) applyWorker(workerID uint64, stopC <-chan struct{}) {
 	for {
 		select {
 		case <-stopC:
-			//e.offloadNodeMap(nodes)
+			bs.stop(workerID)
 			return
 		case <-ticker.C:
 			a := make(map[uint64]struct{})
@@ -446,6 +446,15 @@ func (bs *Raftstore) setApplyReadyByUpdates(updates []Ready) {
 
 func (bs *Raftstore) setApplyReady(clusterID uint64) {
 	bs.ctx.applyWorkerReady.clusterReady(clusterID)
+}
+
+func (bs *Raftstore) stop(workerID uint64) {
+	regions := bs.router.getAllRegions(workerID)
+	for _, r := range regions {
+		peer := bs.router.get(r)
+		atomic.StoreUint32(&peer.closed, 1)
+		peer.peer.stopped = true
+	}
 }
 
 func (bs *Raftstore) shutDown() {
