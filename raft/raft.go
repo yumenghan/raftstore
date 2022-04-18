@@ -140,8 +140,8 @@ type Raft struct {
 	// msgs need to send
 	msgs []pb.Message
 
-	readyToRead  []pb.ReadyToRead
-	readIndex    *readIndex
+	readyToRead []pb.ReadyToRead
+	readIndex   *readIndex
 
 	// the leader id
 	Lead uint64
@@ -191,9 +191,9 @@ func newRaft(c *Config) *Raft {
 		State:            StateFollower,
 		electionTimeout:  c.ElectionTick,
 		heartbeatTimeout: c.HeartbeatTick,
-		preVote: c.PreVote,
-		checkQuorum: c.CheckQuorum,
-		readIndex: newReadIndex(),
+		preVote:          c.PreVote,
+		checkQuorum:      c.CheckQuorum,
+		readIndex:        newReadIndex(),
 	}
 	// confState
 	hardState, confState, err := c.Storage.InitialState()
@@ -284,12 +284,12 @@ func (r *Raft) sendHeartbeat(to uint64) {
 func (r *Raft) sendHeartbeatWithHint(to uint64, ctx pb.ReadIndexCtx) {
 	commit := min(r.Prs[to].Match, r.RaftLog.committed)
 	m := pb.Message{
-		From:    r.id,
-		To:      to,
-		MsgType: pb.MessageType_MsgHeartbeat,
-		Term:    r.Term,
-		Commit:  commit,
-		Hint: ctx.Id,
+		From:     r.id,
+		To:       to,
+		MsgType:  pb.MessageType_MsgHeartbeat,
+		Term:     r.Term,
+		Commit:   commit,
+		Hint:     ctx.Id,
 		HintHigh: ctx.Deadline,
 	}
 	r.send(m)
@@ -635,7 +635,7 @@ func (r *Raft) handleMsgBeat(m pb.Message) {
 // handleHeartbeat handle Heartbeat RPC request
 func (r *Raft) handleHeartbeat(m pb.Message) {
 	// Your Code Here (2A).
-	r.send(pb.Message{From: r.id, To: m.GetFrom(), MsgType: pb.MessageType_MsgHeartbeatResponse})
+	r.send(pb.Message{From: r.id, To: m.GetFrom(), MsgType: pb.MessageType_MsgHeartbeatResponse, Hint: m.GetHint(), HintHigh: m.GetHintHigh()})
 }
 
 func (r *Raft) handleMsgHeartbeatResponse(m pb.Message) {
@@ -650,15 +650,15 @@ func (r *Raft) handleMsgHeartbeatResponse(m pb.Message) {
 
 func (r *Raft) handleReadIndexLeaderConfirmation(m pb.Message) {
 	ctx := pb.ReadIndexCtx{
-		Id:  m.Hint,
+		Id:       m.Hint,
 		Deadline: m.HintHigh,
 	}
-	ris := r.readIndex.confirm(ctx, m.From, len(r.Prs) / 2)
+	ris := r.readIndex.confirm(ctx, m.From, len(r.Prs)/2)
 	for _, s := range ris {
 		if s.from == 0 || s.from == r.id {
 			r.addReadyToRead(s.index, s.ctx)
 		}
-			//} else {
+		//} else {
 		//	r.send(pb.Message{
 		//		To:       s.from,
 		//		Type:     pb.ReadIndexResp,
@@ -872,8 +872,8 @@ func (r *Raft) handleTransferLeader(m pb.Message) {
 
 func (r *Raft) handleReadIndex(m pb.Message) {
 	ctx := pb.ReadIndexCtx{
-		Id: m.Hint,
-		Deadline:  m.HintHigh,
+		Id:       m.Hint,
+		Deadline: m.HintHigh,
 	}
 	if len(r.Prs) > 1 {
 		if !r.hasCommittedEntryAtCurrentTerm() {
@@ -912,8 +912,8 @@ func (r *Raft) hasCommittedEntryAtCurrentTerm() bool {
 func (r *Raft) addReadyToRead(index uint64, ctx pb.ReadIndexCtx) {
 	r.readyToRead = append(r.readyToRead,
 		pb.ReadyToRead{
-			Index:     index,
-			Ctx: &ctx,
+			Index: index,
+			Ctx:   &ctx,
 		})
 }
 

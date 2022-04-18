@@ -105,6 +105,7 @@ func (d *peerMsgHandler) processReadyToRead(ud Ready) {
 			}
 		}
 		d.pendingReadIndexes.addReady(readyToRead)
+		d.pushEntries([]eraftpb.Entry{{EntryType: eraftpb.EntryType_EntryRead, Index: ud.ready.Applied}})
 	}
 }
 

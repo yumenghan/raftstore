@@ -26,8 +26,11 @@ func (d *peerMsgHandler) process() {
 			switch entry.GetEntryType() {
 			case eraftpb.EntryType_EntryConfChange:
 				d.processConfChange(entry)
-			default:
+			case eraftpb.EntryType_EntryNormal:
 				d.processNormal(entry)
+			case eraftpb.EntryType_EntryRead:
+				d.processReadIndex(entry.GetIndex())
+				return
 			}
 			d.processReadIndex(entry.GetIndex())
 		}
@@ -39,7 +42,7 @@ func (d *peerMsgHandler) processReadIndex(applyIndex uint64) {
 	if len(readIndexReq) <= 0 {
 		return
 	}
-
+	log.Debugf("peer[%d] processReadIndex len(readIndexReq):%d", d.PeerId(), len(readIndexReq))
 	resps := make([]*raft_cmdpb.RaftCmdResponse, len(readIndexReq))
 	for j, reqIndex := range readIndexReq {
 		if err := util.CheckRegionEpoch(reqIndex.request, d.Region(), true); err != nil {
@@ -51,6 +54,8 @@ func (d *peerMsgHandler) processReadIndex(applyIndex uint64) {
 		i := 0
 		var err error
 		for _, r := range reqIndex.request.GetRequests() {
+			resp[i] = &raft_cmdpb.Response{}
+			resp[i].CmdType = r.GetCmdType()
 			switch r.CmdType {
 			case raft_cmdpb.CmdType_Get:
 				getRequest := r.GetGet()

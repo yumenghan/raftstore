@@ -8,8 +8,10 @@ import (
 	"github.com/pingcap-incubator/tinykv/log"
 	"github.com/pingcap-incubator/tinykv/proto/pkg/raft_cmdpb"
 	"math/rand"
+	"os"
 	"sync"
 	"sync/atomic"
+	"time"
 )
 
 type logicalClock struct {
@@ -72,8 +74,12 @@ func (k *keyGenerator) nextKey() uint64 {
 	return v
 }
 
-func newKeyGenerator() *keyGenerator {
+func newKeyGenerator(storeID uint64, nodeID uint64, shard uint64) *keyGenerator {
+	pid := os.Getpid()
+	nano := time.Now().UnixNano()
+	seedStr := fmt.Sprintf("%d-%d-%d-%d-%d", pid, nano, storeID, nodeID, shard)
 	m := sha512.New()
+	m.Write([]byte(seedStr))
 	sum := m.Sum(nil)
 	seed := binary.LittleEndian.Uint64(sum)
 	return &keyGenerator{rand: rand.New(rand.NewSource(int64(seed)))}
@@ -221,7 +227,7 @@ func newPendingProposal(storeId, peerId uint64, pendingProposalShards uint64, po
 	}
 	for i := uint64(0); i < ps; i++ {
 		p.shards[i] = newPendingProposalShard(storeId, peerId, pool, proposals)
-		p.keyg[i] = newKeyGenerator()
+		p.keyg[i] = newKeyGenerator(storeId, peerId, i)
 	}
 	return p
 }
@@ -607,7 +613,7 @@ func (p *pendingReadIndex) getApply(applied uint64) []*ReadIndexRequest {
 func (p *pendingReadIndex) applied(reqs []*ReadIndexRequest, resps []*raft_cmdpb.RaftCmdResponse) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	if p.stopped || len(p.batches) == 0 {
+	if p.stopped {
 		return
 	}
 	now := p.getTick()

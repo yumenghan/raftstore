@@ -68,7 +68,7 @@ func (r *readIndex) confirm(ctx pb.ReadIndexCtx,
 		return nil
 	}
 	p.confirmed[from] = struct{}{}
-	if len(p.confirmed)+1 < quorum {
+	if len(p.confirmed) < quorum {
 		return nil
 	}
 	done := 0

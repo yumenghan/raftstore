@@ -67,6 +67,8 @@ type Ready struct {
 	Messages []pb.Message
 
 	ReadyToRead []pb.ReadyToRead
+
+	Applied uint64
 }
 
 // RawNode is a wrapper of Raft.
@@ -173,7 +175,7 @@ func (rn *RawNode) Ready() Ready {
 		Entries:          rn.Raft.RaftLog.unstableEntries(),
 		CommittedEntries: rn.Raft.RaftLog.nextEnts(),
 		Messages:         rn.Raft.msgs,
-		ReadyToRead:      rn.Raft.readyToRead,
+		Applied:          rn.Raft.RaftLog.applied,
 	}
 	if rn.Raft.RaftLog.hasPendingSnapshot() {
 		res.Snapshot = *rn.Raft.RaftLog.pendingSnapshot
@@ -187,10 +189,12 @@ func (rn *RawNode) Ready() Ready {
 	if res.SoftState != nil {
 		rn.prevSoftState = res.SoftState
 	}
-	if len(res.ReadyToRead) > 0 {
+	if len(rn.Raft.readyToRead) > 0 {
+		res.ReadyToRead = make([]pb.ReadyToRead, len(rn.Raft.readyToRead))
+		copy(res.ReadyToRead, rn.Raft.readyToRead)
 		rn.Raft.clearReadyToRead()
 	}
-		rn.Raft.msgs = nil
+	rn.Raft.msgs = nil
 	return res
 }
 

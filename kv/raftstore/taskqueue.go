@@ -12,17 +12,8 @@ var (
 )
 
 type Task struct {
-	Entries      []pb.Entry
+	Entries []pb.Entry
 	//SSRequest    SSRequest
-	ClusterID    uint64
-	NodeID       uint64
-	Index        uint64
-	Save         bool
-	Stream       bool
-	PeriodicSync bool
-	NewNode      bool
-	Recover      bool
-	Initial      bool
 }
 
 // TaskQueue is a queue of tasks to be processed by the state machine.
